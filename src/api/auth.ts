@@ -52,6 +52,30 @@ export interface UserInfoResponse extends AjaxResult {
   isPasswordExpired?: boolean
 }
 
+export interface PasswordResetConfig {
+  contactTypes?: string[]
+  passwordMinLength?: number
+  passwordMaxLength?: number
+  codeExpirationMinutes?: number
+  resendIntervalSeconds?: number
+}
+
+export interface PasswordResetCodePayload {
+  username: string
+  contactType: 'email'
+  contact: string
+  code?: string
+  uuid?: string
+}
+
+export interface PasswordResetPayload {
+  username: string
+  contactType: 'email'
+  contact: string
+  verifyCode: string
+  newPassword: string
+}
+
 export function getCaptchaImage() {
   return http.get<CaptchaImageResponse>('/captchaImage')
 }
@@ -70,6 +94,18 @@ export function getProfile() {
 
 export function updatePassword(payload: { oldPassword: string; newPassword: string }) {
   return http.put<AjaxResult>('/system/user/profile/updatePwd', payload)
+}
+
+export function getPasswordResetConfig() {
+  return http.get<AjaxResult<PasswordResetConfig>>('/password/reset/config')
+}
+
+export function sendPasswordResetCode(payload: PasswordResetCodePayload) {
+  return http.post<AjaxResult<string>>('/password/reset/code', payload)
+}
+
+export function resetLoginPassword(payload: PasswordResetPayload) {
+  return http.post<AjaxResult<string>>('/password/reset', payload)
 }
 
 export function logout() {

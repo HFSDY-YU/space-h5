@@ -117,7 +117,7 @@ onMounted(refreshCaptcha)
 
       <div class="login-options">
         <van-checkbox v-model="form.remember" icon-size="16px">记住登录状态</van-checkbox>
-        <button type="button">忘记密码</button>
+        <RouterLink to="/forgot-password">忘记密码</RouterLink>
       </div>
 
       <van-button block round type="primary" :disabled="!canSubmit" :loading="loading" @click="submitLogin">
@@ -265,10 +265,9 @@ onMounted(refreshCaptcha)
   font-size: 13px;
 }
 
-.login-options button {
+.login-options a {
   color: var(--space-blue);
-  background: transparent;
-  border: 0;
+  font-weight: 500;
 }
 
 </style>
