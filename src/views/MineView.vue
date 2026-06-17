@@ -6,12 +6,10 @@ import { showConfirmDialog, showToast } from 'vant'
 import {
   Bell,
   ChevronRight,
-  FileText,
   LockKeyhole,
   LogOut,
   Mail,
   Phone,
-  Shield,
   UserRound,
 } from '@lucide/vue'
 import { getProfile } from '@/api/auth'
@@ -103,22 +101,6 @@ async function logout() {
         <component :is="item.icon" :size="18" />
         <span>{{ item.label }}</span>
         <em>{{ item.value }}</em>
-        <ChevronRight :size="18" />
-      </button>
-    </section>
-
-    <section class="card menu-card">
-      <h2 class="section-title">其他</h2>
-      <button type="button" @click="router.push('/mine/agreement')">
-        <FileText :size="18" />
-        <span>使用协议</span>
-        <em>预约规则与使用边界</em>
-        <ChevronRight :size="18" />
-      </button>
-      <button type="button" @click="router.push('/mine/privacy')">
-        <Shield :size="18" />
-        <span>隐私政策</span>
-        <em>账号与预约数据说明</em>
         <ChevronRight :size="18" />
       </button>
     </section>

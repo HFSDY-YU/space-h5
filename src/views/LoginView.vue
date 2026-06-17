@@ -20,7 +20,6 @@ const form = reactive({
   password: '',
   captcha: '',
   remember: true,
-  agreed: true,
 })
 
 const canSubmit = computed(() => form.username && form.password && (!captchaEnabled.value || form.captcha))
@@ -43,11 +42,6 @@ async function refreshCaptcha() {
 }
 
 async function submitLogin() {
-  if (!form.agreed) {
-    showToast('请先阅读并同意用户协议和隐私政策')
-    return
-  }
-
   if (!canSubmit.value) {
     showToast('请填写账号、密码和验证码')
     return
@@ -130,11 +124,6 @@ onMounted(refreshCaptcha)
         登录
       </van-button>
 
-      <van-checkbox v-model="form.agreed" class="agreement" icon-size="15px">
-        已阅读并同意用户协议和隐私政策
-      </van-checkbox>
-
-      <p class="login-hint">账号角色由后端 /getInfo 返回的角色和权限自动识别。</p>
     </section>
   </main>
 </template>
@@ -282,15 +271,4 @@ onMounted(refreshCaptcha)
   border: 0;
 }
 
-.agreement {
-  color: var(--space-subtext);
-  font-size: 12px;
-}
-
-.login-hint {
-  margin: 0;
-  color: var(--space-muted);
-  font-size: 12px;
-  line-height: 1.6;
-}
 </style>
