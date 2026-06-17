@@ -112,19 +112,13 @@ server: {
 }
 ```
 
-生产打包请新建或修改 `.env.production`：
+生产打包默认读取 `.env.production`：
 
 ```env
-VITE_API_BASE_URL=http://后端IP:后端端口
+VITE_API_BASE_URL=/prod-api
 ```
 
-示例：
-
-```env
-VITE_API_BASE_URL=http://192.168.1.133:8080
-```
-
-注意：Vite 环境变量会在打包时写入 `dist` 产物。打包后直接修改 `.env.production` 不会生效，修改后端地址后需要重新执行 `pnpm build`。
+部署时需要在 Nginx 或网关中将 `/prod-api` 反向代理到后端服务。注意：Vite 环境变量会在打包时写入 `dist` 产物，修改 `.env.production` 后需要重新执行 `pnpm build`。
 
 如果需要“打包后只改配置文件、不重新构建”，后续可改造为运行时配置，例如读取 `public/config.js` 或 `public/config.json`。
 
