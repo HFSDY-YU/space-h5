@@ -3,7 +3,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useQuery } from '@tanstack/vue-query'
 import { useRouter } from 'vue-router'
 import { showToast } from 'vant'
-import { ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, Filter, Search, XCircle } from '@lucide/vue'
+import { ArrowLeft, CheckCircle2, ChevronDown, ChevronLeft, ChevronRight, Filter, Search, XCircle } from '@lucide/vue'
 import {
   listPublicReservationItems,
   listPublicRooms,
@@ -23,6 +23,12 @@ type RoomAvailabilityState = 'free' | 'partial' | 'blocked'
 type AvailabilityFilter = 'all' | RoomAvailabilityState
 type CapacityFilter = 'all' | 'lt30' | '30-60' | 'gt60'
 
+interface RoomConflictDetail {
+  date: string
+  requestRange: LongReservationTimeRange
+  item: BackendReservationItem
+}
+
 interface RoomAvailability {
   room: Omit<Room, 'slots'>
   state: RoomAvailabilityState
@@ -30,12 +36,27 @@ interface RoomAvailability {
   freeSlotCount: number
   totalSlotCount: number
   busyDates: string[]
+  conflicts: RoomConflictDetail[]
   score: number
 }
 
 const router = useRouter()
 const ruleDraft = ref<LongReservationRuleDraft | null>(null)
 const pageSize = 6
+const capacityOptions: Array<{ text: string; value: CapacityFilter }> = [
+  { text: '全部容量', value: 'all' },
+  { text: '30 人以下', value: 'lt30' },
+  { text: '30-60 人', value: '30-60' },
+  { text: '60 人以上', value: 'gt60' },
+]
+const showCapacityPicker = ref(false)
+const conflictRoom = ref<RoomAvailability | null>(null)
+const showConflictPanel = computed({
+  get: () => Boolean(conflictRoom.value),
+  set: (value) => {
+    if (!value) conflictRoom.value = null
+  },
+})
 const filters = reactive({
   keyword: '',
   buildingName: '',
@@ -119,8 +140,14 @@ const ruleTimeRangeCount = computed(() => {
   if (draft.mode === 'custom') {
     return draft.customSlots?.reduce((total, slot) => total + slot.timeRanges.length, 0) ?? draft.slotCount
   }
+  if (draft.mode === 'weekly' && draft.weekdayTimeRanges) {
+    return draft.weekdays.reduce((total, weekday) => total + (draft.weekdayTimeRanges?.[weekday]?.length ?? 0), 0)
+  }
   return draft.timeRanges.length
 })
+const capacityText = computed(
+  () => capacityOptions.find((option) => option.value === filters.capacity)?.text ?? '全部容量',
+)
 
 onMounted(() => {
   ruleDraft.value = loadLongReservationRuleDraft()
@@ -146,6 +173,11 @@ function timeToMinutes(time: string) {
   return Number(hourText) * 60 + Number(minuteText)
 }
 
+function createLocalDate(date: string) {
+  const [year = 0, month = 1, day = 1] = date.split('-').map(Number)
+  return new Date(year, month - 1, day)
+}
+
 function isOverlapping(item: BackendReservationItem, range: LongReservationTimeRange) {
   return (
     timeToMinutes(formatBackendTime(item.startTime)) < timeToMinutes(range.endTime) &&
@@ -155,6 +187,15 @@ function isOverlapping(item: BackendReservationItem, range: LongReservationTimeR
 
 function buildRuleSlots(draft: LongReservationRuleDraft) {
   const slots: Array<{ date: string; range: LongReservationTimeRange }> = []
+  if (draft.resolvedSlots?.length) {
+    for (const slot of draft.resolvedSlots) {
+      for (const range of slot.timeRanges) {
+        slots.push({ date: slot.date, range })
+      }
+    }
+    return slots
+  }
+
   if (draft.mode === 'custom' && draft.customSlots?.length) {
     for (const slot of draft.customSlots) {
       for (const range of slot.timeRanges) {
@@ -165,7 +206,9 @@ function buildRuleSlots(draft: LongReservationRuleDraft) {
   }
 
   for (const date of draft.dates) {
-    for (const range of draft.timeRanges) {
+    const weekday = String(createLocalDate(date).getDay())
+    const ranges = draft.mode === 'weekly' ? draft.weekdayTimeRanges?.[weekday] ?? draft.timeRanges : draft.timeRanges
+    for (const range of ranges) {
       slots.push({ date, range })
     }
   }
@@ -185,6 +228,7 @@ function buildRoomAvailabilityList(): RoomAvailability[] {
       freeSlotCount: 0,
       totalSlotCount: 0,
       busyDates: [],
+      conflicts: [],
       score: 3,
     }))
   }
@@ -193,6 +237,7 @@ function buildRoomAvailabilityList(): RoomAvailability[] {
     .map((room) => {
       const roomItems = occupiedItems.value.filter((item) => String(item.roomId ?? '') === room.id)
       const busyDates = new Set<string>()
+      const conflicts: RoomConflictDetail[] = []
       let busySlotCount = 0
 
       for (const slot of ruleSlots) {
@@ -200,6 +245,11 @@ function buildRoomAvailabilityList(): RoomAvailability[] {
         if (matchedItem) {
           busySlotCount += 1
           busyDates.add(slot.date)
+          conflicts.push({
+            date: slot.date,
+            requestRange: slot.range,
+            item: matchedItem,
+          })
         }
       }
 
@@ -215,6 +265,7 @@ function buildRoomAvailabilityList(): RoomAvailability[] {
         freeSlotCount,
         totalSlotCount: slotCount,
         busyDates: [...busyDates].slice(0, 4),
+        conflicts,
         score: stateScore * 10000 + busySlotCount * 100 - room.capacity,
       }
     })
@@ -229,6 +280,25 @@ function stateLabel(state: RoomAvailabilityState) {
 
 function stateIcon(state: RoomAvailabilityState) {
   return state === 'free' ? CheckCircle2 : XCircle
+}
+
+function conflictStatusText(item: BackendReservationItem) {
+  const status = toRoomStatus(item.itemStatus)
+  if (status === 'reviewing') return '审核中'
+  if (status === 'occupied') return '已占用'
+  return '冲突'
+}
+
+function formatConflictTime(item: BackendReservationItem) {
+  return `${formatBackendTime(item.startTime)}-${formatBackendTime(item.endTime)}`
+}
+
+function conflictApplicantText(item: BackendReservationItem) {
+  return item.applicantName || item.orgName || '未提供'
+}
+
+function conflictContactText(item: BackendReservationItem) {
+  return item.applicantPhone || '未提供'
 }
 
 function goPrevPage() {
@@ -248,11 +318,31 @@ function resetFilters() {
   filters.pageNum = 1
 }
 
+function getPickerValue(option: unknown) {
+  if (option && typeof option === 'object' && 'selectedValues' in option) {
+    return String((option as { selectedValues?: unknown[] }).selectedValues?.[0] ?? '')
+  }
+
+  if (option && typeof option === 'object' && 'value' in option) {
+    return String((option as { value?: unknown }).value ?? '')
+  }
+
+  return String(option ?? '')
+}
+
+function confirmCapacityPicker(option: unknown) {
+  const nextCapacity = getPickerValue(option) as CapacityFilter
+  if (capacityOptions.some((item) => item.value === nextCapacity)) {
+    filters.capacity = nextCapacity
+  }
+  showCapacityPicker.value = false
+}
+
 function selectRoom(item: RoomAvailability) {
   const draft = ruleDraft.value
   if (!draft) return
   if (item.state !== 'free') {
-    showToast('请选择全空闲教室')
+    conflictRoom.value = item
     return
   }
 
@@ -318,12 +408,10 @@ function selectRoom(item: RoomAvailability) {
       <label class="select-field">
         <Filter :size="17" />
         <span>容量</span>
-        <select v-model="filters.capacity">
-          <option value="all">全部容量</option>
-          <option value="lt30">30 人以下</option>
-          <option value="30-60">30-60 人</option>
-          <option value="gt60">60 人以上</option>
-        </select>
+        <button type="button" @click="showCapacityPicker = true">
+          {{ capacityText }}
+        </button>
+        <ChevronDown :size="16" />
       </label>
     </section>
 
@@ -361,6 +449,7 @@ function selectRoom(item: RoomAvailability) {
           <div class="room-score">
             <b>{{ stateLabel(item.state) }}</b>
             <span>{{ item.freeSlotCount }}/{{ item.totalSlotCount }}</span>
+            <em v-if="item.conflicts.length">查看冲突</em>
           </div>
         </button>
       </div>
@@ -377,6 +466,60 @@ function selectRoom(item: RoomAvailability) {
         <ChevronRight :size="18" />
       </button>
     </section>
+
+    <van-popup v-model:show="showCapacityPicker" position="bottom" round safe-area-inset-bottom>
+      <van-picker
+        title="选择容量"
+        :columns="capacityOptions"
+        :model-value="[filters.capacity]"
+        @confirm="confirmCapacityPicker"
+        @cancel="showCapacityPicker = false"
+      />
+    </van-popup>
+
+    <van-popup v-model:show="showConflictPanel" position="bottom" round safe-area-inset-bottom @closed="conflictRoom = null">
+      <section v-if="conflictRoom" class="conflict-panel">
+        <header class="conflict-header">
+          <div>
+            <p class="mini">冲突明细</p>
+            <strong>{{ conflictRoom.room.code }} · {{ conflictRoom.room.name }}</strong>
+            <span>{{ conflictRoom.room.building }} {{ conflictRoom.room.floor }} · {{ conflictRoom.busySlotCount }} 个冲突</span>
+          </div>
+          <button type="button" @click="conflictRoom = null">关闭</button>
+        </header>
+
+        <div class="conflict-list">
+          <article v-for="(conflict, index) in conflictRoom.conflicts" :key="`${conflict.date}-${conflict.requestRange.id}-${index}`">
+            <div class="conflict-title">
+              <strong>{{ conflict.date }}</strong>
+              <span>{{ conflictStatusText(conflict.item) }}</span>
+            </div>
+            <dl>
+              <div>
+                <dt>申请时段</dt>
+                <dd>{{ conflict.requestRange.startTime }}-{{ conflict.requestRange.endTime }}</dd>
+              </div>
+              <div>
+                <dt>冲突时段</dt>
+                <dd>{{ formatConflictTime(conflict.item) }}</dd>
+              </div>
+              <div>
+                <dt>预约主题</dt>
+                <dd>{{ conflict.item.title || '未填写' }}</dd>
+              </div>
+              <div>
+                <dt>申请人</dt>
+                <dd>{{ conflictApplicantText(conflict.item) }}</dd>
+              </div>
+              <div>
+                <dt>联系方式</dt>
+                <dd>{{ conflictContactText(conflict.item) }}</dd>
+              </div>
+            </dl>
+          </article>
+        </div>
+      </section>
+    </van-popup>
   </main>
 </template>
 
@@ -459,13 +602,14 @@ function selectRoom(item: RoomAvailability) {
 
 .search-field input,
 .filter-grid input,
-.select-field select {
+.select-field button {
   width: 100%;
   min-height: 44px;
   color: var(--space-text);
   background: transparent;
   border: 0;
   outline: 0;
+  text-align: left;
 }
 
 .filter-grid {
@@ -514,7 +658,11 @@ function selectRoom(item: RoomAvailability) {
 }
 
 .select-field {
-  grid-template-columns: 22px auto minmax(0, 1fr);
+  grid-template-columns: 22px auto minmax(0, 1fr) 16px;
+}
+
+.select-field > svg:last-child {
+  color: var(--space-muted);
 }
 
 .section-title {
@@ -606,6 +754,13 @@ function selectRoom(item: RoomAvailability) {
   color: var(--space-subtext);
 }
 
+.room-score em {
+  color: var(--space-orange);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+}
+
 .pager-bar {
   position: sticky;
   bottom: calc(var(--space-bottom-nav-height) + 10px);
@@ -639,6 +794,115 @@ function selectRoom(item: RoomAvailability) {
 .pager-bar span {
   color: var(--space-subtext);
   text-align: center;
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.conflict-panel {
+  display: grid;
+  gap: 14px;
+  max-height: min(82vh, 720px);
+  padding: 16px 16px calc(env(safe-area-inset-bottom) + 18px);
+  background: var(--space-bg);
+}
+
+.conflict-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 56px;
+  align-items: start;
+  gap: 12px;
+}
+
+.conflict-header div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.conflict-header strong {
+  overflow: hidden;
+  color: var(--space-text);
+  font-size: 19px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conflict-header span {
+  color: var(--space-subtext);
+  font-size: 12px;
+}
+
+.conflict-header button {
+  min-height: 38px;
+  color: var(--space-blue);
+  background: #fff;
+  border: 1px solid var(--space-line);
+  border-radius: 12px;
+  font-weight: 800;
+}
+
+.conflict-list {
+  display: grid;
+  gap: 10px;
+  max-height: min(62vh, 560px);
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.conflict-list article {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  background: #fff;
+  border: 1px solid rgba(232, 238, 247, 0.92);
+  border-radius: 16px;
+}
+
+.conflict-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.conflict-title strong {
+  color: var(--space-text);
+  font-size: 15px;
+}
+
+.conflict-title span {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  color: var(--space-orange);
+  background: #fff6e6;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.conflict-list dl {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.conflict-list dl div {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.conflict-list dt {
+  color: var(--space-subtext);
+  font-size: 12px;
+}
+
+.conflict-list dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--space-text);
   font-size: 13px;
   font-weight: 750;
 }

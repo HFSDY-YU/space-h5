@@ -2,12 +2,13 @@
 import { computed, ref } from 'vue'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { useRoute, useRouter } from 'vue-router'
-import { showToast } from 'vant'
-import { ArrowLeft, Bell, CalendarDays, MapPin, Users } from '@lucide/vue'
+import { showImagePreview, showToast } from 'vant'
+import { ArrowLeft, Bell, CalendarDays, DoorOpen, MapPin, Users } from '@lucide/vue'
 import {
   getRoom,
   getPublicRoom,
   listPublicReservationItems,
+  listReservationItems,
   listPublicTimePeriods,
   updateRoom,
   type BackendReservationItem,
@@ -15,10 +16,18 @@ import {
 } from '@/api/space'
 import {
   addDays,
-  buildRoomSlots,
+  BOOKABLE_END_TIME,
+  BOOKABLE_SLOT_MINUTES,
+  BOOKABLE_START_TIME,
+  buildBookableTimeSlots,
+  formatBackendTime,
   formatDateValue,
   formatWeekday,
+  minutesToTime,
+  resolveSpaceAssetUrl,
   sortBackendTimePeriods,
+  timeToMinutes,
+  toRoomStatus,
   toUiRoomBase,
   toUiTimePeriod,
 } from '@/services/spaceMapper'
@@ -26,13 +35,65 @@ import { useSessionStore } from '@/stores/session'
 import type { Room, RoomStatus, TimePeriod } from '@/types/space'
 
 type WeekCellStatus = RoomStatus | 'expired'
+type TimelineSegmentStatus = Exclude<RoomStatus, 'free'> | 'expired'
 
 interface WeekCell {
+  slotIndex: number
   date: string
   period: TimePeriod
   status: WeekCellStatus
   summary: string
+  applicantName: string
+  startTime: string
+  endTime: string
   reservationId?: string
+  itemId?: string
+}
+
+interface WeekTimelineSegment {
+  id: string
+  date: string
+  status: TimelineSegmentStatus
+  sourceStatus: Exclude<RoomStatus, 'free'>
+  title: string
+  label: string
+  applicantName: string
+  applicantPhone: string
+  contactAddress: string
+  contactText: string
+  startTime: string
+  endTime: string
+  left: number
+  width: number
+  reservationId?: string
+  itemId?: string
+}
+
+interface WeekDayPanel {
+  date: Date
+  value: string
+  monthDay: string
+  weekday: string
+  isToday: boolean
+  cells: WeekCell[]
+  segments: WeekTimelineSegment[]
+  expiredPercent: number
+  availableText: string
+}
+
+interface AgendaTimeTick {
+  key: string
+  time: string
+  top: number
+}
+
+interface SelectedTimeRange {
+  key: string
+  date: string
+  periodId: string
+  startTime: string
+  endTime: string
+  cells: WeekCell[]
 }
 
 const route = useRoute()
@@ -43,10 +104,55 @@ const showRoomStatusPanel = ref(false)
 const adminRoom = ref<BackendSpaceRoom>()
 const adminRoomLoading = ref(false)
 const roomStatusSubmitting = ref('')
+const expandedDateValue = ref(firstQueryValue(route.query.date) || formatDateValue(new Date()))
+const selectedSlotKeys = ref<string[]>([])
 
 function firstQueryValue(value: unknown) {
   if (Array.isArray(value)) return String(value[0] ?? '')
   return typeof value === 'string' ? value : ''
+}
+
+function goBack() {
+  if (firstQueryValue(route.query.from) === 'home') {
+    router.push({
+      name: 'home',
+      query: {
+        date: bookingDate.value,
+        building: firstQueryValue(route.query.building) || room.value.building || undefined,
+        floor: firstQueryValue(route.query.floor) || room.value.floor || undefined,
+      },
+    })
+    return
+  }
+
+  if (firstQueryValue(route.query.from) === 'rooms-admin') {
+    router.push({
+      name: 'rooms-admin',
+      query: {
+        keyword: firstQueryValue(route.query.keyword) || undefined,
+        building: firstQueryValue(route.query.building) || room.value.building || undefined,
+        floor: firstQueryValue(route.query.floor) || room.value.floor || undefined,
+        type: firstQueryValue(route.query.type) || undefined,
+        status: firstQueryValue(route.query.status) || undefined,
+        equipment: route.query.equipment || undefined,
+      },
+    })
+    return
+  }
+
+  router.back()
+}
+
+function getSourceRouteQuery() {
+  return {
+    from: firstQueryValue(route.query.from) || undefined,
+    keyword: firstQueryValue(route.query.keyword) || undefined,
+    building: firstQueryValue(route.query.building) || room.value.building || undefined,
+    floor: firstQueryValue(route.query.floor) || room.value.floor || undefined,
+    type: firstQueryValue(route.query.type) || undefined,
+    status: firstQueryValue(route.query.status) || undefined,
+    equipment: route.query.equipment || undefined,
+  }
 }
 
 function parseDateValue(value: unknown) {
@@ -80,30 +186,54 @@ function weekCellStatusText(status: WeekCellStatus) {
   return statusText(status)
 }
 
+function segmentStatusText(status: TimelineSegmentStatus) {
+  if (status === 'expired') return '已过期'
+  return statusText(status)
+}
+
+function normalizeDisplayText(value: unknown) {
+  return typeof value === 'string' ? value.trim() : value == null ? '' : String(value).trim()
+}
+
+function buildSegmentContactText(item: BackendReservationItem) {
+  const contactParts: string[] = []
+  const applicantPhone = normalizeDisplayText(item.applicantPhone)
+  const contactAddress = normalizeDisplayText(item.orgName)
+
+  // 后端场次列表会合并主预约的申请人快照；这里统一压缩成一行联系信息，避免 30 分钟日程块被撑高。
+  if (applicantPhone) contactParts.push(`联系 ${applicantPhone}`)
+  if (contactAddress) contactParts.push(contactAddress)
+  return contactParts.join(' · ')
+}
+
 function roomOpenStatusText(status?: string) {
   return status === '1' ? '已停用' : '启用中'
 }
 
-function normalizeTime(time?: string) {
-  if (!time) return '00:00:00'
-  if (/^\d{1,2}:\d{2}$/.test(time)) return `${time.padStart(5, '0')}:00`
-  if (/^\d{1,2}:\d{2}:\d{2}$/.test(time)) return time.padStart(8, '0')
-  return time
-}
-
-function isPastPeriod(dateValue: string, period: TimePeriod) {
-  const endTime = normalizeTime(period.endTime || period.time.split('-')[1])
-  return new Date(`${dateValue}T${endTime}`).getTime() <= Date.now()
+function clampPercent(value: number) {
+  return Math.min(100, Math.max(0, value))
 }
 
 const selectedDate = ref(parseDateValue(route.query.date))
 const selectedPeriodId = ref(firstQueryValue(route.query.period))
+const selectedStartTime = ref(firstQueryValue(route.query.startTime))
+const selectedEndTime = ref(firstQueryValue(route.query.endTime))
 const bookingDate = computed(() => formatDateValue(selectedDate.value))
 const weekStart = computed(() => startOfWeek(selectedDate.value))
 const weekEnd = computed(() => addDays(weekStart.value, 6))
 const weekStartValue = computed(() => formatDateValue(weekStart.value))
 const weekRangeText = computed(() => `${formatDateValue(weekStart.value)} 至 ${formatDateValue(weekEnd.value)}`)
 const todayValue = formatDateValue(new Date())
+const timelineStartMinute = timeToMinutes(BOOKABLE_START_TIME)
+const timelineEndMinute = timeToMinutes(BOOKABLE_END_TIME)
+const timelineTotalMinutes = timelineEndMinute - timelineStartMinute
+const timelineMiddleText = minutesToTime(timelineStartMinute + timelineTotalMinutes / 2)
+// 展开后的详情区采用纵向日程轴：刻度、占用块、选择块共用同一套比例，避免视觉位置和真实时间错位。
+const DETAIL_PIXELS_PER_MINUTE = 1.6
+const AGENDA_TICK_MINUTES = 30
+const DETAIL_MINOR_TICK_MINUTES = 10
+const detailSlotHeight = Math.round(BOOKABLE_SLOT_MINUTES * DETAIL_PIXELS_PER_MINUTE)
+const detailMinorTickHeight = Math.round(DETAIL_MINOR_TICK_MINUTES * DETAIL_PIXELS_PER_MINUTE)
 const weekDays = computed(() =>
   Array.from({ length: 7 }, (_, index) => {
     const date = addDays(weekStart.value, index)
@@ -118,25 +248,59 @@ const weekDays = computed(() =>
   }),
 )
 
+function getRoundedNowMinute() {
+  const now = new Date()
+  const nowMinutes = now.getHours() * 60 + now.getMinutes()
+  return Math.ceil(nowMinutes / BOOKABLE_SLOT_MINUTES) * BOOKABLE_SLOT_MINUTES
+}
+
+function getExpiredCutoffMinute(dateValue: string) {
+  if (dateValue < todayValue) return timelineEndMinute
+  if (dateValue > todayValue) return timelineStartMinute
+  return Math.min(Math.max(getRoundedNowMinute(), timelineStartMinute), timelineEndMinute)
+}
+
+function isPastTimeRange(dateValue: string, endTime?: string) {
+  const endText = formatBackendTime(endTime)
+  if (!endText) return false
+  if (dateValue < todayValue) return true
+  if (dateValue > todayValue) return false
+  return timeToMinutes(endText) <= getExpiredCutoffMinute(dateValue)
+}
+
+async function loadDayReservationItems(roomId: string, date: string, canViewReviewing: boolean) {
+  if (canViewReviewing) {
+    try {
+      const result = await listReservationItems({
+        roomId: Number(roomId),
+        bookingDate: date,
+        occupiedOnly: true,
+      })
+      return result.rows
+    } catch {
+      // 高权限接口失败时降级到公开接口，保证普通账号或权限缓存异常时页面仍可用。
+    }
+  }
+
+  const result = await listPublicReservationItems({
+    roomId: Number(roomId),
+    bookingDate: date,
+  })
+  return result.rows
+}
+
 async function loadRoomDetail() {
   const roomId = String(route.params.roomId)
   const dateValues = weekDays.value.map((day) => day.value)
   const [room, periodsResult, itemResults] = await Promise.all([
     getPublicRoom(roomId),
     listPublicTimePeriods(),
-    Promise.all(
-      dateValues.map((date) =>
-        listPublicReservationItems({
-          roomId: Number(roomId),
-          bookingDate: date,
-        }),
-      ),
-    ),
+    Promise.all(dateValues.map((date) => loadDayReservationItems(roomId, date, session.canViewReviewingSlots))),
   ])
   const periods = sortBackendTimePeriods(periodsResult.rows).map(toUiTimePeriod)
   const roomBase = room ? toUiRoomBase(room) : undefined
   const itemsByDate = dateValues.reduce<Record<string, BackendReservationItem[]>>((itemsMap, date, index) => {
-    itemsMap[date] = itemResults[index]?.rows ?? []
+    itemsMap[date] = itemResults[index] ?? []
     return itemsMap
   }, {})
 
@@ -154,7 +318,12 @@ async function loadRoomDetail() {
 }
 
 const detailQuery = useQuery({
-  queryKey: computed(() => ['h5-room-detail-week', String(route.params.roomId), weekStartValue.value]),
+  queryKey: computed(() => [
+    'h5-room-detail-week',
+    String(route.params.roomId),
+    weekStartValue.value,
+    session.canViewReviewingSlots ? 'full' : 'public',
+  ]),
   queryFn: loadRoomDetail,
   staleTime: 30_000,
 })
@@ -175,49 +344,211 @@ const room = computed<Room>(() => {
     }
   )
 })
-const timePeriods = computed(() => detailQuery.data.value?.periods ?? [])
-const activePeriod = computed(() => selectedPeriodId.value || timePeriods.value[0]?.id || '')
-const weekDayPanels = computed(() => {
-  const backendRoom = detailQuery.data.value?.backendRoom as BackendSpaceRoom | undefined
-  const itemsByDate = detailQuery.data.value?.itemsByDate ?? {}
+const timePeriods = computed(() => {
+  const periods = detailQuery.data.value?.periods ?? []
+  return periods.length ? periods : buildBookableTimeSlots()
+})
 
-  return weekDays.value.map((day) => {
-    const slots = backendRoom ? buildRoomSlots(backendRoom, timePeriods.value, itemsByDate[day.value] ?? []) : []
-    const cells = timePeriods.value.map<WeekCell>((period, index) => {
-      const slot = slots[index]
-      const isExpired = isPastPeriod(day.value, period)
-      return {
-        date: day.value,
-        period,
-        status: isExpired ? 'expired' : ((slot?.status ?? 'free') as RoomStatus),
-        summary: slot?.summary ?? '可预约',
-        reservationId: slot?.reservationId,
-      }
-    })
+function getPeriodStart(period: TimePeriod) {
+  return formatBackendTime(period.startTime || period.time.split('-')[0])
+}
+
+function getPeriodEnd(period: TimePeriod) {
+  return formatBackendTime(period.endTime || period.time.split('-')[1])
+}
+
+function isOverlappingTimeRange(startTime: string, endTime: string, period: TimePeriod) {
+  const itemStart = timeToMinutes(startTime)
+  const itemEnd = timeToMinutes(endTime)
+  const periodStart = timeToMinutes(getPeriodStart(period))
+  const periodEnd = timeToMinutes(getPeriodEnd(period))
+  return itemStart < periodEnd && itemEnd > periodStart
+}
+
+function pickPeriodItem(items: BackendReservationItem[], period: TimePeriod) {
+  const matchedItems = items.filter((item) => {
+    const status = toRoomStatus(item.itemStatus)
+    if (!status || status === 'free') return false
+    const startTime = formatBackendTime(item.startTime)
+    const endTime = formatBackendTime(item.endTime)
+    return startTime && endTime && isOverlappingTimeRange(startTime, endTime, period)
+  })
+
+  return (
+    matchedItems.find((item) => toRoomStatus(item.itemStatus) === 'reviewing') ??
+    matchedItems.find((item) => toRoomStatus(item.itemStatus) === 'occupied')
+  )
+}
+
+function getExpiredPercent(dateValue: string) {
+  const cutoffMinute = getExpiredCutoffMinute(dateValue)
+  return clampPercent(((cutoffMinute - timelineStartMinute) / timelineTotalMinutes) * 100)
+}
+
+function getTimelineStyle(startTime: string, endTime: string) {
+  const startMinute = Math.max(timeToMinutes(startTime), timelineStartMinute)
+  const endMinute = Math.min(timeToMinutes(endTime), timelineEndMinute)
+  const widthMinutes = Math.max(endMinute - startMinute, BOOKABLE_SLOT_MINUTES)
+
+  return {
+    left: clampPercent(((startMinute - timelineStartMinute) / timelineTotalMinutes) * 100),
+    width: clampPercent((widthMinutes / timelineTotalMinutes) * 100),
+  }
+}
+
+function buildTimelineSegment(item: BackendReservationItem, dateValue: string): WeekTimelineSegment | null {
+  const status = toRoomStatus(item.itemStatus)
+  if (!status || status === 'free') return null
+
+  const startTime = formatBackendTime(item.startTime)
+  const endTime = formatBackendTime(item.endTime)
+  if (!startTime || !endTime || timeToMinutes(endTime) <= timelineStartMinute || timeToMinutes(startTime) >= timelineEndMinute) {
+    return null
+  }
+
+  const style = getTimelineStyle(startTime, endTime)
+  const segmentStatus = isPastTimeRange(dateValue, endTime) ? 'expired' : status
+  const label = segmentStatus === 'expired' ? '已过期' : status === 'reviewing' ? '审核中' : '占用'
+  const applicantName = normalizeDisplayText(item.applicantName)
+  const applicantPhone = normalizeDisplayText(item.applicantPhone)
+  const contactAddress = normalizeDisplayText(item.orgName)
+
+  return {
+    id: String(item.itemId ?? `${item.roomId}-${dateValue}-${startTime}-${endTime}`),
+    date: dateValue,
+    status: segmentStatus,
+    sourceStatus: status,
+    title: item.title || label,
+    label,
+    applicantName,
+    applicantPhone,
+    contactAddress,
+    contactText: buildSegmentContactText(item),
+    startTime,
+    endTime,
+    left: style.left,
+    width: style.width,
+    reservationId: item.reservationId ? String(item.reservationId) : undefined,
+    itemId: item.itemId ? String(item.itemId) : undefined,
+  }
+}
+
+function buildWeekDayPanel(day: (typeof weekDays.value)[number], rawItems: BackendReservationItem[]): WeekDayPanel {
+  const roomId = String(route.params.roomId)
+  const roomItems = rawItems.filter((item) => String(item.roomId ?? '') === roomId)
+  const cells = timePeriods.value.map<WeekCell>((period, slotIndex) => {
+    const startTime = getPeriodStart(period)
+    const endTime = getPeriodEnd(period)
+    const item = pickPeriodItem(roomItems, period)
+    const itemStatus = toRoomStatus(item?.itemStatus)
+    const isExpired = isPastTimeRange(day.value, endTime)
+    const status = isExpired ? 'expired' : itemStatus ?? 'free'
 
     return {
-      ...day,
-      cells,
+      slotIndex,
+      date: day.value,
+      period,
+      status,
+      summary: item?.title || (status === 'free' ? '可预约' : status === 'expired' ? '已过期' : statusText(status)),
+      applicantName: item?.applicantName || '',
+      startTime,
+      endTime,
+      reservationId: item?.reservationId ? String(item.reservationId) : undefined,
+      itemId: item?.itemId ? String(item.itemId) : undefined,
     }
   })
+  const segments = roomItems
+    .map((item) => buildTimelineSegment(item, day.value))
+    .filter((segment): segment is WeekTimelineSegment => Boolean(segment))
+    .sort((prev, next) => timeToMinutes(prev.startTime) - timeToMinutes(next.startTime))
+  const freeCount = cells.filter((cell) => cell.status === 'free').length
+
+  return {
+    ...day,
+    cells,
+    segments,
+    expiredPercent: getExpiredPercent(day.value),
+    availableText: freeCount ? `${freeCount} 个半小时可约` : day.value < todayValue ? '已过期' : '暂无可约时段',
+  }
+}
+
+const weekDayPanels = computed<WeekDayPanel[]>(() => {
+  const itemsByDate = detailQuery.data.value?.itemsByDate ?? {}
+
+  return weekDays.value.map((day) => buildWeekDayPanel(day, itemsByDate[day.value] ?? []))
 })
+const expandedDay = computed(() => weekDayPanels.value.find((day) => day.value === expandedDateValue.value))
 const selectedCell = computed(() => {
+  const startTime = formatBackendTime(selectedStartTime.value)
   const cells = weekDayPanels.value.flatMap((day) => day.cells)
   return (
-    cells.find((cell) => cell.date === bookingDate.value && cell.period.id === activePeriod.value) ??
-    cells.find((cell) => cell.date === bookingDate.value) ??
-    cells[0]
+    cells.find(
+      (cell) =>
+        cell.date === bookingDate.value &&
+        cell.startTime === startTime &&
+        cell.endTime === formatBackendTime(selectedEndTime.value),
+    ) ??
+    (startTime ? cells.find((cell) => cell.date === bookingDate.value && cell.startTime === startTime) : undefined) ??
+    (selectedPeriodId.value
+      ? cells.find((cell) => cell.date === bookingDate.value && cell.period.id === selectedPeriodId.value)
+      : undefined) ??
+    undefined
   )
 })
 const selectedPeriodText = computed(() => {
   const cell = selectedCell.value
-  return cell ? `${cell.period.name} ${cell.period.time}` : ''
+  const startTime = formatBackendTime(selectedStartTime.value) || cell?.startTime || ''
+  const endTime = formatBackendTime(selectedEndTime.value) || cell?.endTime || ''
+  return startTime && endTime ? `${startTime}-${endTime}` : ''
+})
+const selectedCells = computed(() => {
+  const keys = new Set(selectedSlotKeys.value)
+  if (!keys.size) return []
+
+  return weekDayPanels.value
+    .flatMap((day) => day.cells)
+    .filter((cell) => cell.date === bookingDate.value && cell.status === 'free' && keys.has(getCellKey(cell)))
+    .sort((prev, next) => timeToMinutes(prev.startTime) - timeToMinutes(next.startTime))
+})
+const selectedSlotCount = computed(() => selectedCells.value.length)
+const selectedTimeRanges = computed<SelectedTimeRange[]>(() => {
+  const ranges: SelectedTimeRange[] = []
+
+  selectedCells.value.forEach((cell) => {
+    const lastRange = ranges[ranges.length - 1]
+    if (lastRange && lastRange.date === cell.date && lastRange.endTime === cell.startTime) {
+      lastRange.endTime = cell.endTime
+      lastRange.cells.push(cell)
+      lastRange.key = `${lastRange.date}-${lastRange.startTime}-${lastRange.endTime}`
+      return
+    }
+
+    ranges.push({
+      key: `${cell.date}-${cell.startTime}-${cell.endTime}`,
+      date: cell.date,
+      periodId: cell.period.id,
+      startTime: cell.startTime,
+      endTime: cell.endTime,
+      cells: [cell],
+    })
+  })
+
+  return ranges
+})
+const selectedRangeText = computed(() => {
+  if (!selectedCells.value.length) return selectedPeriodText.value
+  return selectedTimeRanges.value.map((range) => `${range.startTime}-${range.endTime}`).join('、')
+})
+const expandedDateText = computed(() => {
+  const day = expandedDay.value
+  return day ? `${day.value} ${formatWeekday(day.date)}` : selectedDateText.value
 })
 const selectedDateText = computed(() => `${bookingDate.value} ${formatWeekday(selectedDate.value)}`)
-const canReserveSelectedSlot = computed(() => selectedCell.value?.status === 'free')
+const canReserveSelectedSlot = computed(() => selectedCell.value?.status === 'free' && selectedSlotCount.value > 0)
 const reserveButtonText = computed(() => {
-  if (selectedCell.value?.status === 'expired') return '已过期不可预约'
-  if (selectedCell.value?.status === 'free') return '预约选中时段'
+  if (!selectedCell.value) return '请选择时段'
+  if (selectedCell.value.status === 'expired') return '已过期不可预约'
+  if (selectedCell.value.status === 'free') return selectedSlotCount.value > 1 ? `预约 ${selectedSlotCount.value} 个时段` : '预约选中时段'
   return '当前时段不可预约'
 })
 const isLoading = computed(() => detailQuery.isLoading.value)
@@ -226,15 +557,48 @@ const adminRoomStatus = computed(() => adminRoom.value?.status ?? detailQuery.da
 const roomStatusText = computed(() => roomOpenStatusText(adminRoomStatus.value))
 const roomStatusCanEnable = computed(() => adminRoomStatus.value === '1')
 const roomStatusCanDisable = computed(() => adminRoomStatus.value !== '1')
+const roomImageUrl = computed(() => resolveSpaceAssetUrl(room.value.imageUrl))
 
-function updateSelection(dateValue: string, periodId = activePeriod.value) {
+function previewRoomImage() {
+  if (!roomImageUrl.value) return
+
+  showImagePreview({
+    images: [roomImageUrl.value],
+    closeable: true,
+    showIndex: false,
+  })
+}
+
+function updateSelection(dateValue: string, periodId = '', startTime = '', endTime = '') {
   selectedDate.value = parseDateValue(dateValue)
   selectedPeriodId.value = periodId
+  selectedStartTime.value = formatBackendTime(startTime)
+  selectedEndTime.value = formatBackendTime(endTime)
   void router.replace({
     query: {
       ...route.query,
       date: dateValue,
       period: periodId,
+      startTime: selectedStartTime.value || undefined,
+      endTime: selectedEndTime.value || undefined,
+    },
+  })
+}
+
+function expandDay(day: WeekDayPanel) {
+  expandedDateValue.value = expandedDateValue.value === day.value ? '' : day.value
+  selectedDate.value = parseDateValue(day.value)
+  selectedPeriodId.value = ''
+  selectedStartTime.value = ''
+  selectedEndTime.value = ''
+  selectedSlotKeys.value = []
+  void router.replace({
+    query: {
+      ...route.query,
+      date: day.value,
+      period: undefined,
+      startTime: undefined,
+      endTime: undefined,
     },
   })
 }
@@ -242,29 +606,211 @@ function updateSelection(dateValue: string, periodId = activePeriod.value) {
 function changeWeek(weeks: number) {
   const nextDate = addDays(selectedDate.value, weeks * 7)
   updateSelection(formatDateValue(nextDate))
+  expandedDateValue.value = formatDateValue(nextDate)
+  selectedSlotKeys.value = []
 }
 
 function backThisWeek() {
-  updateSelection(formatDateValue(new Date()))
+  const today = formatDateValue(new Date())
+  updateSelection(today)
+  expandedDateValue.value = today
+  selectedSlotKeys.value = []
 }
 
-function selectCell(cell: WeekCell) {
-  if (isPastPeriod(cell.date, cell.period)) return
-  updateSelection(cell.date, cell.period.id)
+function getCellKey(cell: WeekCell) {
+  return `${cell.date}-${cell.startTime}-${cell.endTime}`
 }
 
-function isSelectedCell(cell: WeekCell) {
-  return cell.date === bookingDate.value && cell.period.id === selectedCell.value?.period.id
+function getSelectableCells(day: WeekDayPanel) {
+  return day.cells.filter((cell) => cell.status !== 'expired')
+}
+
+function getUnselectedSelectableCells(day: WeekDayPanel) {
+  return getSelectableCells(day).filter((cell) => cell.status !== 'free' || !isCellInSelectedRange(cell))
+}
+
+function getVisibleAgendaStartMinute(day: WeekDayPanel) {
+  const firstVisibleCell = getSelectableCells(day)[0]
+  return firstVisibleCell ? timeToMinutes(firstVisibleCell.startTime) : timelineEndMinute
+}
+
+function getVisibleAgendaHeight(day: WeekDayPanel) {
+  const startMinute = getVisibleAgendaStartMinute(day)
+  if (startMinute >= timelineEndMinute) return 120
+  return Math.round((timelineEndMinute - startMinute) * DETAIL_PIXELS_PER_MINUTE)
+}
+
+function getAgendaTicks(day: WeekDayPanel): AgendaTimeTick[] {
+  const startMinute = getVisibleAgendaStartMinute(day)
+  if (startMinute >= timelineEndMinute) return []
+
+  const firstTick = Math.ceil(startMinute / AGENDA_TICK_MINUTES) * AGENDA_TICK_MINUTES
+  const ticks: AgendaTimeTick[] = []
+  for (let minute = firstTick; minute <= timelineEndMinute; minute += AGENDA_TICK_MINUTES) {
+    ticks.push({
+      key: `${day.value}-${minute}`,
+      time: minutesToTime(minute),
+      top: Math.round((minute - startMinute) * DETAIL_PIXELS_PER_MINUTE),
+    })
+  }
+  return ticks
+}
+
+function selectDetailCell(day: WeekDayPanel, cell: WeekCell) {
+  if (cell.status !== 'free') {
+    if (cell.status === 'expired') {
+      showToast('该时段已过期')
+      return
+    }
+    openSlotDetail(cell)
+    return
+  }
+
+  const key = getCellKey(cell)
+  const currentKeys = bookingDate.value === day.value ? selectedSlotKeys.value : []
+  const nextKeys = currentKeys.includes(key) ? currentKeys.filter((item) => item !== key) : [...currentKeys, key]
+  selectedSlotKeys.value = nextKeys
+
+  if (nextKeys.length) {
+    const selectedDayCells = day.cells
+      .filter((item) => nextKeys.includes(getCellKey(item)))
+      .sort((prev, next) => timeToMinutes(prev.startTime) - timeToMinutes(next.startTime))
+    const firstCell = selectedDayCells[0]
+    const lastCell = selectedDayCells[selectedDayCells.length - 1]
+    updateSelection(day.value, firstCell?.period.id ?? '', firstCell?.startTime ?? '', lastCell?.endTime ?? '')
+    return
+  }
+
+  updateSelection(day.value)
+}
+
+function clickDetailCell(day: WeekDayPanel, cell: WeekCell) {
+  selectDetailCell(day, cell)
+}
+
+function openSlotDetail(cell: WeekCell) {
+  router.push({
+    path: `/rooms/${room.value.id}/slot`,
+    query: {
+      ...getSourceRouteQuery(),
+      date: cell.date,
+      period: cell.period.id,
+      startTime: cell.startTime,
+      endTime: cell.endTime,
+      itemId: cell.itemId,
+    },
+  })
+}
+
+function openSegment(segment: WeekTimelineSegment) {
+  if (segment.status === 'expired') {
+    showToast('该时段已过期')
+    return
+  }
+
+  router.push({
+    path: `/rooms/${room.value.id}/slot`,
+    query: {
+      ...getSourceRouteQuery(),
+      date: segment.date,
+      startTime: segment.startTime,
+      endTime: segment.endTime,
+      itemId: segment.itemId,
+    },
+  })
 }
 
 function reserveSelectedSlot() {
-  const cell = selectedCell.value
-  if (!cell || cell.status !== 'free') return
+  const firstRange = selectedTimeRanges.value[0]
+  const lastRange = selectedTimeRanges.value[selectedTimeRanges.value.length - 1]
+  if (!firstRange || !lastRange) return
+  const slots = selectedTimeRanges.value.map((range) => `${range.startTime}-${range.endTime}`).join(',')
 
   router.push({
     name: 'reservation-apply',
-    query: { roomId: room.value.id, period: cell.period.id, date: cell.date },
+    query: {
+      roomId: room.value.id,
+      period: firstRange.periodId,
+      date: firstRange.date,
+      startTime: firstRange.startTime,
+      endTime: lastRange.endTime,
+      slots,
+    },
   })
+}
+
+function isSelectedDay(day: WeekDayPanel) {
+  return day.value === expandedDateValue.value
+}
+
+function isSelectedSegment(segment: WeekTimelineSegment) {
+  return (
+    segment.date === bookingDate.value &&
+    segment.startTime === selectedCell.value?.startTime &&
+    segment.endTime === selectedCell.value?.endTime
+  )
+}
+
+function getSegmentStyle(segment: WeekTimelineSegment) {
+  return {
+    left: `${segment.left}%`,
+    width: `${segment.width}%`,
+  }
+}
+
+function getCellTimelineStyle(cell: WeekCell) {
+  const style = getTimelineStyle(cell.startTime, cell.endTime)
+  return {
+    left: `${style.left}%`,
+    width: `${style.width}%`,
+  }
+}
+
+function getAgendaRangeStyle(startTime: string, endTime: string) {
+  return getAgendaOffsetRangeStyle(timelineStartMinute, startTime, endTime)
+}
+
+function getAgendaOffsetRangeStyle(baseMinute: number, startTime: string, endTime: string) {
+  const startMinute = Math.max(timeToMinutes(startTime), baseMinute)
+  const endMinute = Math.min(timeToMinutes(endTime), timelineEndMinute)
+  const duration = Math.max(endMinute - startMinute, BOOKABLE_SLOT_MINUTES)
+
+  return {
+    top: `${Math.round((startMinute - baseMinute) * DETAIL_PIXELS_PER_MINUTE)}px`,
+    height: `${Math.max(Math.round(duration * DETAIL_PIXELS_PER_MINUTE), 48)}px`,
+  }
+}
+
+function getAgendaCellStyle(day: WeekDayPanel, cell: WeekCell) {
+  return getAgendaOffsetRangeStyle(getVisibleAgendaStartMinute(day), cell.startTime, cell.endTime)
+}
+
+function getAgendaRangeButtonStyle(day: WeekDayPanel, range: SelectedTimeRange) {
+  return getAgendaOffsetRangeStyle(getVisibleAgendaStartMinute(day), range.startTime, range.endTime)
+}
+
+function getAgendaSegmentStyle(day: WeekDayPanel, segment: WeekTimelineSegment) {
+  return getAgendaOffsetRangeStyle(getVisibleAgendaStartMinute(day), segment.startTime, segment.endTime)
+}
+
+function durationText(startTime: string, endTime: string) {
+  const minutes = Math.max(timeToMinutes(endTime) - timeToMinutes(startTime), 0)
+  if (!minutes) return ''
+  return `${minutes}分钟`
+}
+
+function isCellInSelectedRange(cell: WeekCell) {
+  return selectedSlotKeys.value.includes(getCellKey(cell))
+}
+
+function cancelSelectedRange(range: SelectedTimeRange) {
+  const cancelKeys = new Set(range.cells.map(getCellKey))
+  selectedSlotKeys.value = selectedSlotKeys.value.filter((key) => !cancelKeys.has(key))
+
+  const nextCells = selectedCells.value.filter((cell) => !cancelKeys.has(getCellKey(cell)))
+  const firstCell = nextCells[0]
+  const lastCell = nextCells[nextCells.length - 1]
+  updateSelection(range.date, firstCell?.period.id ?? '', firstCell?.startTime ?? '', lastCell?.endTime ?? '')
 }
 
 async function loadAdminRoomStatus() {
@@ -318,9 +864,9 @@ async function changeRoomStatus(status: '0' | '1') {
 </script>
 
 <template>
-  <main class="safe-page">
+  <main class="safe-page room-detail-page">
     <header class="detail-nav">
-      <button type="button" @click="router.back()">
+      <button type="button" @click="goBack">
         <ArrowLeft :size="20" />
       </button>
       <strong>{{ room.code }}</strong>
@@ -330,11 +876,28 @@ async function changeRoomStatus(status: '0' | '1') {
     </header>
 
     <section class="card room-hero">
-      <p class="mini">{{ room.type }} · {{ room.building }}</p>
-      <h1>{{ room.name }}</h1>
-      <div class="room-meta">
-        <span><MapPin :size="15" />{{ room.location }}</span>
-        <span><Users :size="15" />{{ room.capacity }} 人</span>
+      <div class="room-hero__main">
+        <div class="room-hero__content">
+          <p class="mini">{{ room.type }} · {{ room.building }}</p>
+          <h1>{{ room.name }}</h1>
+          <div class="room-meta">
+            <span><MapPin :size="15" />{{ room.location }}</span>
+            <span><Users :size="15" />{{ room.capacity }} 人</span>
+          </div>
+        </div>
+
+        <button
+          v-if="roomImageUrl"
+          class="room-hero__image"
+          type="button"
+          :aria-label="`查看${room.code}房间图片`"
+          @click="previewRoomImage"
+        >
+          <img :src="roomImageUrl" :alt="`${room.code}房间图片`" />
+        </button>
+        <div v-else class="room-hero__image room-hero__image--empty" aria-label="房间图片占位">
+          <DoorOpen :size="24" />
+        </div>
       </div>
       <div class="equipment-row">
         <span v-for="item in room.equipment" :key="item">{{ item }}</span>
@@ -346,6 +909,10 @@ async function changeRoomStatus(status: '0' | '1') {
         <div>
           <h2 class="section-title">本周占用图</h2>
           <p class="week-range">{{ weekRangeText }}</p>
+          <div class="timeline-legend" aria-label="占用状态说明">
+            <span class="legend-dot legend-dot--reviewing">审核中</span>
+            <span class="legend-dot legend-dot--occupied">占用</span>
+          </div>
         </div>
         <button class="plain-button" type="button" @click="backThisWeek">
           <CalendarDays :size="16" />
@@ -359,34 +926,141 @@ async function changeRoomStatus(status: '0' | '1') {
       </div>
 
       <div class="week-schedule" aria-label="房间本周占用图">
-        <article
-          v-for="day in weekDayPanels"
-          :key="day.value"
-          class="day-row"
-          :class="{ 'day-row--today': day.isToday, 'day-row--active': day.value === bookingDate }"
-        >
-          <button class="day-label" type="button" @click="updateSelection(day.value)">
-            <strong>{{ day.weekday }}</strong>
-            <span>{{ day.monthDay }}</span>
-            <small v-if="day.isToday">今天</small>
-          </button>
-
-          <div class="day-slots">
-            <button
-              v-for="cell in day.cells"
-              :key="`${cell.date}-${cell.period.id}`"
-              type="button"
-              class="week-cell"
-              :class="[`week-cell--${cell.status}`, { active: isSelectedCell(cell) }]"
-              :disabled="cell.status === 'expired'"
-              :aria-label="`${day.weekday}${cell.period.name}${cell.period.time}${weekCellStatusText(cell.status)}`"
-              @click="selectCell(cell)"
-            >
-              <span>{{ cell.period.name }}</span>
-              <b>{{ weekCellStatusText(cell.status) }}</b>
+        <template v-for="day in weekDayPanels" :key="day.value">
+          <article
+            class="timeline-day-row"
+            :class="{ 'timeline-day-row--today': day.isToday, 'timeline-day-row--active': isSelectedDay(day) }"
+          >
+            <button class="timeline-day-label" type="button" @click="expandDay(day)">
+              <strong>{{ day.weekday }}</strong>
+              <span>{{ day.monthDay }}</span>
+              <small v-if="day.isToday">今天</small>
             </button>
-          </div>
-        </article>
+
+            <div
+              class="timeline-track-wrap"
+              role="button"
+              tabindex="0"
+              :aria-label="`${day.weekday}${day.monthDay}，点击展开或收回时段选择`"
+              @click="expandDay(day)"
+              @keydown.enter.prevent="expandDay(day)"
+              @keydown.space.prevent="expandDay(day)"
+            >
+              <div class="timeline-track">
+                <span
+                  v-for="cell in day.cells"
+                  :key="`${cell.date}-${cell.period.id}`"
+                  class="timeline-free-slot"
+                  :class="{ active: isCellInSelectedRange(cell), disabled: cell.status !== 'free' }"
+                  :style="getCellTimelineStyle(cell)"
+                ></span>
+                <button
+                  v-for="segment in day.segments.filter((item) => item.status !== 'expired')"
+                  :key="segment.id"
+                  type="button"
+                  class="timeline-segment"
+                  :class="[
+                    `timeline-segment--${segment.status}`,
+                    { active: isSelectedSegment(segment), 'timeline-segment--source-reviewing': segment.sourceStatus === 'reviewing' },
+                  ]"
+                  :style="getSegmentStyle(segment)"
+                  :aria-label="`${day.weekday}${segment.startTime}-${segment.endTime}${segmentStatusText(segment.status)}${segment.applicantName || segment.title}`"
+                  @click.stop="openSegment(segment)"
+                >
+                  <span>{{ segment.applicantName || segment.label }}</span>
+                </button>
+              </div>
+              <div class="timeline-row-foot">
+                <span>{{ BOOKABLE_START_TIME }}</span>
+                <span>{{ timelineMiddleText }}</span>
+                <span>{{ BOOKABLE_END_TIME }}</span>
+              </div>
+            </div>
+          </article>
+
+          <Transition name="day-detail">
+            <section v-if="isSelectedDay(day)" class="day-detail-panel" aria-label="时段选择">
+              <div class="day-detail-head">
+                <div>
+                  <strong>{{ expandedDateText }}</strong>
+                  <span>点击时段添加，再次点击取消</span>
+                </div>
+                <span v-if="selectedSlotCount" class="range-count">{{ selectedSlotCount }} 段</span>
+              </div>
+
+              <div class="day-agenda">
+                <div class="agenda-times" :style="{ height: `${getVisibleAgendaHeight(day)}px` }" aria-hidden="true">
+                  <span v-for="tick in getAgendaTicks(day)" :key="tick.key" :style="{ top: `${tick.top}px` }">
+                    {{ tick.time }}
+                  </span>
+                </div>
+
+                <div
+                  class="agenda-board"
+                  :style="{
+                    height: `${getVisibleAgendaHeight(day)}px`,
+                    '--agenda-slot-height': `${detailSlotHeight}px`,
+                    '--agenda-minor-height': `${detailMinorTickHeight}px`,
+                  }"
+                >
+                  <template v-for="cell in getUnselectedSelectableCells(day)" :key="`${cell.date}-${cell.period.id}-hit`">
+                    <button
+                      v-if="cell.status === 'free'"
+                      type="button"
+                      :data-slot-index="cell.slotIndex"
+                      class="agenda-hit-slot"
+                      :style="getAgendaCellStyle(day, cell)"
+                      :aria-pressed="isCellInSelectedRange(cell)"
+                      :aria-label="`${cell.startTime}-${cell.endTime}可预约，点击${isCellInSelectedRange(cell) ? '取消' : '添加'}`"
+                      @click="clickDetailCell(day, cell)"
+                    >
+                      <span>{{ cell.startTime }}-{{ cell.endTime }}</span>
+                    </button>
+                  </template>
+
+                  <button
+                    v-for="range in selectedTimeRanges"
+                    :key="range.key"
+                    type="button"
+                    class="agenda-selected-range"
+                    :style="getAgendaRangeButtonStyle(day, range)"
+                    :aria-label="`${range.startTime}-${range.endTime}已选择，点击取消`"
+                    @click="cancelSelectedRange(range)"
+                  >
+                    <span>{{ range.startTime }}-{{ range.endTime }}</span>
+                  </button>
+
+                  <button
+                    v-for="segment in day.segments.filter((item) => item.status !== 'expired')"
+                    :key="`${segment.id}-agenda`"
+                    type="button"
+                    class="agenda-block"
+                    :class="[
+                      `agenda-block--${segment.status}`,
+                      { 'agenda-block--source-reviewing': segment.sourceStatus === 'reviewing' },
+                    ]"
+                    :style="getAgendaSegmentStyle(day, segment)"
+                    :aria-label="`${segment.startTime}-${segment.endTime}${segmentStatusText(segment.status)}${segment.applicantName || segment.title}${segment.contactText ? `，${segment.contactText}` : ''}`"
+                    @click.stop="openSegment(segment)"
+                  >
+                    <strong>{{ segment.applicantName || segment.title || segment.label }}</strong>
+                    <span>{{ segment.startTime }}-{{ segment.endTime }} {{ durationText(segment.startTime, segment.endTime) }}</span>
+                    <span v-if="segment.contactText" class="agenda-block__contact">{{ segment.contactText }}</span>
+                  </button>
+                </div>
+              </div>
+            </section>
+          </Transition>
+        </template>
+      </div>
+
+      <div class="sr-only">
+        <div v-for="day in weekDayPanels" :key="`sr-${day.value}`">
+          <p>{{ day.weekday }} {{ day.monthDay }}</p>
+          <p v-for="cell in day.cells" :key="`${cell.date}-${cell.period.id}`">
+            {{ cell.startTime }}-{{ cell.endTime }} {{ weekCellStatusText(cell.status) }}
+          </p>
+        </div>
       </div>
 
       <van-loading v-if="isLoading" class="state-box">加载房间占用中</van-loading>
@@ -396,17 +1070,17 @@ async function changeRoomStatus(status: '0' | '1') {
     <section class="card selected-card">
       <div>
         <p class="mini">当前选择</p>
-        <strong>{{ selectedDateText }}</strong>
-        <span>{{ selectedPeriodText }}</span>
+        <strong>{{ selectedCell ? selectedDateText : expandedDateText }}</strong>
+        <span>{{ selectedCell ? selectedRangeText : '请在展开的时段表中选择' }}</span>
       </div>
       <span v-if="selectedCell" class="selected-status" :class="`selected-status--${selectedCell.status}`">
-        {{ weekCellStatusText(selectedCell.status) }}
+        {{ selectedSlotCount ? `${selectedSlotCount} 段` : weekCellStatusText(selectedCell.status) }}
       </span>
     </section>
 
-    <section v-if="session.isTeacher || session.isAdmin" class="fixed-actions">
+    <section v-if="session.canReserve || session.canManageRooms" class="fixed-actions">
       <van-button
-        v-if="session.isTeacher"
+        v-if="session.canReserve"
         block
         round
         type="primary"
@@ -415,7 +1089,7 @@ async function changeRoomStatus(status: '0' | '1') {
       >
         {{ reserveButtonText }}
       </van-button>
-      <van-button v-if="session.isAdmin" block round plain type="primary" @click="openRoomStatusPanel">
+      <van-button v-if="session.canManageRooms" block round plain type="primary" @click="openRoomStatusPanel">
         启用 / 停用管理
       </van-button>
     </section>
@@ -468,6 +1142,12 @@ async function changeRoomStatus(status: '0' | '1') {
 </template>
 
 <style scoped>
+.room-detail-page {
+  position: relative;
+  z-index: 0;
+  padding-bottom: calc(var(--space-bottom-nav-height) + 220px);
+}
+
 .detail-nav {
   display: grid;
   grid-template-columns: 42px 1fr 42px;
@@ -499,14 +1179,52 @@ async function changeRoomStatus(status: '0' | '1') {
     #1677ff;
 }
 
+.room-hero__main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 112px;
+  align-items: center;
+  gap: 16px;
+}
+
+.room-hero__content {
+  min-width: 0;
+}
+
 .room-hero .mini,
 .room-hero .muted {
   color: rgba(255, 255, 255, 0.76);
 }
 
 .room-hero h1 {
+  overflow: hidden;
   margin: 8px 0 12px;
   font-size: 27px;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.room-hero__image {
+  display: grid;
+  place-items: center;
+  width: 112px;
+  height: 112px;
+  padding: 0;
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.86);
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.26);
+  border-radius: 8px;
+}
+
+.room-hero__image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.room-hero__image--empty {
+  border-style: dashed;
 }
 
 .room-meta {
@@ -519,6 +1237,10 @@ async function changeRoomStatus(status: '0' | '1') {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .equipment-row {
@@ -533,6 +1255,18 @@ async function changeRoomStatus(status: '0' | '1') {
   background: rgba(255, 255, 255, 0.16);
   border-radius: 999px;
   font-size: 12px;
+}
+
+@media (max-width: 360px) {
+  .room-hero__main {
+    grid-template-columns: minmax(0, 1fr) 92px;
+    gap: 12px;
+  }
+
+  .room-hero__image {
+    width: 92px;
+    height: 92px;
+  }
 }
 
 .date-actions {
@@ -558,6 +1292,7 @@ async function changeRoomStatus(status: '0' | '1') {
 
 .week-card {
   margin-bottom: 12px;
+  overflow: hidden;
 }
 
 .week-range {
@@ -572,127 +1307,504 @@ async function changeRoomStatus(status: '0' | '1') {
   gap: 10px;
 }
 
-.day-row {
+.timeline-day-row {
   display: grid;
-  grid-template-columns: 58px minmax(0, 1fr);
-  gap: 8px;
+  grid-template-columns: 60px minmax(0, 1fr);
+  gap: 10px;
   align-items: stretch;
-  padding: 8px;
-  background: #f8fbff;
-  border: 1px solid var(--space-line);
-  border-radius: 16px;
+  padding: 10px;
+  background: #fff;
+  border: 1px solid rgba(232, 238, 247, 0.92);
+  border-radius: 8px;
+  box-shadow: 0 8px 22px rgba(54, 89, 150, 0.08);
 }
 
-.day-row--active {
+.timeline-day-row--active {
   border-color: rgba(22, 119, 255, 0.42);
-  box-shadow: 0 0 0 3px rgba(22, 119, 255, 0.08);
+  box-shadow:
+    0 8px 22px rgba(54, 89, 150, 0.08),
+    0 0 0 3px rgba(22, 119, 255, 0.08);
 }
 
-.day-label {
+.timeline-day-label {
   display: grid;
   place-items: center;
-  min-height: 58px;
+  min-height: 60px;
   padding: 6px 4px;
   color: var(--space-text);
-  background: #fff;
+  background: #fbfdff;
   border: 1px solid var(--space-line);
-  border-radius: 13px;
+  border-radius: 8px;
 }
 
-.day-label strong,
-.day-label span,
-.day-label small {
+.timeline-day-label strong,
+.timeline-day-label span,
+.timeline-day-label small {
   display: block;
   line-height: 1.15;
 }
 
-.day-label strong {
+.timeline-day-label strong {
   font-size: 14px;
   font-weight: 850;
 }
 
-.day-label span {
+.timeline-day-label span {
   color: var(--space-subtext);
   font-size: 12px;
 }
 
-.day-label small {
+.timeline-day-label small {
   color: var(--space-blue);
   font-size: 11px;
   font-weight: 800;
 }
 
-.day-row--today .day-label {
+.timeline-day-row--today .timeline-day-label {
   color: var(--space-blue-deep);
   border-color: rgba(22, 119, 255, 0.28);
 }
 
-.day-slots {
+.timeline-track-wrap {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 7px;
+  align-content: center;
+  gap: 8px;
   min-width: 0;
+  min-height: 60px;
+  padding: 7px 0 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  outline: none;
 }
 
-.week-cell {
-  display: grid;
-  place-items: center;
+.timeline-track-wrap:focus-visible {
+  border-radius: 8px;
+  box-shadow: 0 0 0 3px rgba(22, 119, 255, 0.12);
+}
+
+.timeline-track {
+  position: relative;
+  height: 24px;
+  overflow: hidden;
+  background: transparent;
+  border-radius: 999px;
+}
+
+.timeline-track::before {
+  position: absolute;
+  inset: 9px 0 auto;
+  height: 6px;
+  background: #eef2f7;
+  border-radius: 999px;
+  content: '';
+}
+
+.timeline-free-slot {
+  position: absolute;
+  top: 9px;
+  height: 6px;
+  z-index: 2;
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.timeline-free-slot.active {
+  background: rgba(22, 119, 255, 0.2);
+  outline: 2px solid rgba(22, 119, 255, 0.76);
+  outline-offset: -2px;
+}
+
+.timeline-free-slot.disabled {
+  display: none;
+}
+
+.timeline-segment {
+  position: absolute;
+  top: 8px;
+  height: 8px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  padding: 0 5px;
+  overflow: hidden;
+  color: #fff;
+  border: 0;
+  border-radius: 999px;
+  box-shadow: 0 5px 10px rgba(15, 31, 61, 0.12);
+}
+
+.timeline-segment span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
+.timeline-segment--reviewing {
+  background: #d97706;
+}
+
+.timeline-segment--occupied {
+  background: #1677ff;
+}
+
+.timeline-segment--expired {
+  color: #566174;
+  background: #cfd8e6;
+  box-shadow: none;
+}
+
+.timeline-segment--source-reviewing.timeline-segment--expired {
+  border: 1px solid rgba(217, 119, 6, 0.42);
+}
+
+.timeline-segment.active {
+  outline: 2px solid #0f1f3d;
+  outline-offset: 1px;
+}
+
+.timeline-row-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   min-width: 0;
-  min-height: 58px;
-  padding: 7px 3px;
-  border: 1px solid transparent;
-  border-radius: 13px;
+  color: var(--space-text);
+  font-size: 13px;
   line-height: 1.2;
 }
 
-.week-cell span,
-.week-cell b {
-  display: block;
-  max-width: 100%;
+.timeline-row-foot span {
   overflow: hidden;
-  text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.week-cell span {
+.timeline-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-top: 8px;
+}
+
+.legend-dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  color: var(--space-subtext);
   font-size: 12px;
   font-weight: 750;
 }
 
-.week-cell b {
-  font-size: 13px;
+.legend-dot::before {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  content: '';
+}
+
+.legend-dot--reviewing::before {
+  background: #d97706;
+}
+
+.legend-dot--occupied::before {
+  background: #1677ff;
+}
+
+.legend-dot--expired::before {
+  background: #cfd8e6;
+}
+
+.day-detail-panel {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  background: #fff;
+  border: 1px solid rgba(22, 119, 255, 0.2);
+  border-radius: 16px;
+  box-shadow: 0 10px 24px rgba(54, 89, 150, 0.07);
+}
+
+.day-detail-enter-active,
+.day-detail-leave-active {
+  max-height: 1600px;
+  overflow: hidden;
+  transition:
+    max-height 260ms ease,
+    opacity 220ms ease,
+    transform 220ms ease,
+    margin 220ms ease;
+}
+
+.day-detail-enter-from,
+.day-detail-leave-to {
+  max-height: 0;
+  margin-top: -8px;
+  opacity: 0;
+  transform: translateY(-8px);
+}
+
+.day-detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.day-detail-head div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.day-detail-head strong {
+  color: var(--space-text);
+  font-size: 15px;
+  line-height: 1.25;
+}
+
+.day-detail-head span {
+  color: var(--space-subtext);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.range-count {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 48px;
+  min-height: 28px;
+  padding: 0 10px;
+  color: var(--space-blue);
+  background: #eef6ff;
+  border-radius: 999px;
+  font-size: 12px;
   font-weight: 850;
 }
 
-.week-cell--free {
+.day-agenda {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+  user-select: none;
+}
+
+.agenda-times {
+  position: relative;
+  min-width: 0;
+  color: #8a94a8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.agenda-times span {
+  position: absolute;
+  right: 4px;
+  line-height: 1;
+  transform: translateY(-50%);
+  white-space: nowrap;
+}
+
+.agenda-times span:first-child {
+  transform: translateY(0);
+}
+
+.agenda-times span:last-child {
+  transform: translateY(-100%);
+}
+
+.agenda-board {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent calc(var(--agenda-minor-height) - 1px),
+      rgba(15, 31, 61, 0.07) calc(var(--agenda-minor-height) - 1px),
+      rgba(15, 31, 61, 0.07) var(--agenda-minor-height)
+    ),
+    repeating-linear-gradient(
+      to bottom,
+      transparent 0,
+      transparent calc(var(--agenda-slot-height) - 1px),
+      rgba(22, 119, 255, 0.15) calc(var(--agenda-slot-height) - 1px),
+      rgba(22, 119, 255, 0.15) var(--agenda-slot-height)
+    ),
+    #fbfdff;
+  border: 1px solid rgba(221, 229, 242, 0.95);
+  border-radius: 14px;
+  touch-action: pan-y;
+}
+
+.room-detail-page .fixed-actions {
+  position: fixed;
+  right: 16px;
+  bottom: calc(var(--space-bottom-nav-height) + 10px);
+  left: 16px;
+  z-index: 30;
+  margin-top: 0;
+  padding: 10px;
+  background: rgba(245, 248, 254, 0.92);
+  border: 1px solid rgba(232, 238, 247, 0.9);
+  border-radius: 18px;
+  box-shadow: 0 12px 32px rgba(38, 62, 106, 0.16);
+  backdrop-filter: blur(14px);
+}
+
+.agenda-hit-slot {
+  position: absolute;
+  right: 8px;
+  left: 8px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 48px;
+  padding: 0 12px;
   color: #078047;
-  background: #eaf8f0;
+  background: rgba(234, 248, 240, 0.94);
+  border: 1px solid rgba(8, 128, 71, 0.16);
+  border-radius: 8px;
+  box-shadow: 0 5px 12px rgba(8, 128, 71, 0.06);
+  touch-action: manipulation;
 }
 
-.week-cell--reviewing {
-  color: #9a5b00;
-  background: #fff7e6;
+.agenda-hit-slot span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.week-cell--occupied {
-  color: #b54708;
-  background: #fff1e8;
+.agenda-hit-slot span {
+  font-size: 13px;
+  font-weight: 800;
 }
 
-.week-cell--expired {
-  color: #6b768c;
-  background: #eef2f7;
+.agenda-hit-slot:focus-visible {
+  outline: 3px solid rgba(22, 119, 255, 0.18);
+  outline-offset: 2px;
 }
 
-.week-cell:disabled {
-  cursor: not-allowed;
-  opacity: 0.78;
+.agenda-selected-range {
+  position: absolute;
+  right: 8px;
+  left: 8px;
+  z-index: 3;
+  display: flex;
+  align-items: flex-start;
+  min-height: 48px;
+  padding: 12px;
+  color: #fff;
+  background: rgba(22, 119, 255, 0.92);
+  border: 1px solid rgba(15, 87, 214, 0.72);
+  border-radius: 8px;
+  box-shadow: 0 9px 18px rgba(22, 119, 255, 0.2);
+  text-align: left;
 }
 
-.week-cell.active {
-  border-color: currentColor;
-  box-shadow: 0 0 0 2px rgba(15, 31, 61, 0.08);
+.agenda-selected-range span {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 850;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agenda-selected-range:focus-visible {
+  outline: 3px solid rgba(22, 119, 255, 0.2);
+  outline-offset: 2px;
+}
+
+.agenda-block {
+  position: absolute;
+  right: 8px;
+  left: 8px;
+  display: grid;
+  align-content: start;
+  gap: 5px;
+  min-height: 48px;
+  padding: 12px 14px;
+  overflow: hidden;
+  border-radius: 8px;
+  text-align: left;
+  z-index: 4;
+  border: 1px solid transparent;
+  box-shadow: 0 8px 18px rgba(38, 62, 106, 0.1);
+}
+
+.agenda-block strong,
+.agenda-block span {
+  min-width: 0;
+  overflow: hidden;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agenda-block strong {
+  font-size: 14px;
+  font-weight: 850;
+}
+
+.agenda-block span {
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.agenda-block__contact {
+  opacity: 0.86;
+}
+
+.agenda-block--reviewing {
+  color: #a85a00;
+  background: #fff3e7;
+  border-color: #f0a24b;
+}
+
+.agenda-block--occupied {
+  color: #0f5fcb;
+  background: #edf5ff;
+  border-color: rgba(22, 119, 255, 0.42);
+}
+
+.agenda-block--expired {
+  color: #6a7589;
+  background: rgba(238, 242, 247, 0.92);
+  border-color: rgba(106, 118, 140, 0.22);
+  box-shadow: none;
+}
+
+.agenda-block--source-reviewing.agenda-block--expired {
+  border-color: rgba(217, 119, 6, 0.28);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .selected-card {
@@ -848,27 +1960,51 @@ async function changeRoomStatus(status: '0' | '1') {
 }
 
 @media (max-width: 360px) {
-  .day-row {
-    grid-template-columns: 52px minmax(0, 1fr);
+  .timeline-day-row {
+    grid-template-columns: 54px minmax(0, 1fr);
     gap: 6px;
     padding: 7px;
   }
 
-  .day-slots {
-    gap: 5px;
+  .timeline-day-label {
+    min-height: 62px;
   }
 
-  .week-cell {
-    min-height: 56px;
+  .timeline-track-wrap {
+    min-height: 62px;
+    padding: 7px 8px;
   }
 
-  .week-cell span,
-  .day-label span {
+  .timeline-day-label span,
+  .timeline-row-foot {
     font-size: 11px;
   }
 
-  .week-cell b {
-    font-size: 12px;
+  .timeline-segment span {
+    font-size: 9px;
+  }
+
+  .day-agenda {
+    grid-template-columns: 44px minmax(0, 1fr);
+    gap: 6px;
+  }
+
+  .agenda-times {
+    font-size: 11px;
+  }
+
+  .agenda-hit-slot,
+  .agenda-block {
+    right: 6px;
+    left: 6px;
+    padding: 10px 11px;
+  }
+}
+
+@media (min-width: 560px) {
+  .room-detail-page .fixed-actions {
+    right: calc((100vw - 430px) / 2 + 16px);
+    left: calc((100vw - 430px) / 2 + 16px);
   }
 }
 </style>

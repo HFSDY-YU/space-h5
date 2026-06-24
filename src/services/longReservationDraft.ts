@@ -27,8 +27,15 @@ export interface LongReservationRuleDraft {
   startDate: string
   endDate: string
   weekdays: string[]
+  weekdayTimeRanges?: Record<string, LongReservationTimeRange[]>
   customDates: string[]
   customSlots?: LongReservationCustomDateSlot[]
+  /**
+   * 前端按当前时间过滤后的实际提交场次。
+   * 例如长期每周预约从今天开始，但今天上午已过期时，只在这里剔除今天上午，
+   * 规则 startDate/endDate 仍保留用户选择的原始范围。
+   */
+  resolvedSlots?: LongReservationCustomDateSlot[]
   timeRanges: LongReservationTimeRange[]
   dates: string[]
   slotCount: number

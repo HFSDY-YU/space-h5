@@ -173,7 +173,8 @@ a {
 
 .status-cancelled,
 .status-finished,
-.status-partial {
+.status-partial,
+.status-returned {
   color: #596275;
   background: #f2f4f7;
 }

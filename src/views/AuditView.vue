@@ -3,24 +3,29 @@ import { computed, ref } from 'vue'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { useRouter } from 'vue-router'
 import { showConfirmDialog, showToast } from 'vant'
-import { Bell, CalendarDays, CheckSquare, Filter, Search, Square } from '@lucide/vue'
+import { Bell, CalendarDays, CheckSquare, Filter, RotateCcw, Search, Square } from '@lucide/vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import {
   approveReservation,
+  approveCancelReservation,
   batchApproveReservations,
   batchRejectReservations,
   getReservation,
   listCancelPendingReservations,
   listPendingReservations,
   listReservations,
+  rejectCancelReservation,
   rejectReservation,
+  returnReservation,
   type BackendReservation,
 } from '@/api/space'
 import { formatDateValue, toUiReservations } from '@/services/spaceMapper'
+import { useSessionStore } from '@/stores/session'
 import type { Reservation } from '@/types/space'
 
 const router = useRouter()
 const queryClient = useQueryClient()
+const session = useSessionStore()
 const activeTab = ref<'pending' | 'cancel' | 'history'>('pending')
 const operatingId = ref('')
 const keyword = ref('')
@@ -30,6 +35,10 @@ const typeFilter = ref<'all' | Reservation['type']>('all')
 const peopleFilter = ref<'all' | 'small' | 'medium' | 'large'>('all')
 const dateRange = ref<Date[]>([])
 const selectedIds = ref<string[]>([])
+const showReturnPanel = ref(false)
+const returnSubmitting = ref(false)
+const returnTargetIds = ref<string[]>([])
+const returnReason = ref('')
 const calendarMinDate = new Date(new Date().getFullYear() - 1, 0, 1)
 const calendarMaxDate = new Date(new Date().getFullYear() + 1, 11, 31)
 const bookingDateStart = computed(() => (dateRange.value[0] ? formatDateValue(dateRange.value[0]) : ''))
@@ -39,6 +48,8 @@ const dateRangeText = computed(() => {
   if (bookingDateStart.value === bookingDateEnd.value) return bookingDateStart.value
   return `${bookingDateStart.value} 至 ${bookingDateEnd.value}`
 })
+const workbenchTitle = computed(() => (session.isProperty ? '物业工作台' : session.isTeacher ? '老师工作台' : '审核工作台'))
+const workbenchSubtitle = computed(() => (session.isProperty ? '处理物业复审与取消审核' : '处理同校学生预约初审'))
 const activeFilterCount = computed(() => {
   return (
     Number(typeFilter.value !== 'all') +
@@ -50,7 +61,8 @@ const hasSearchOrFilters = computed(() => Boolean(keyword.value.trim()) || activ
 
 function hasCompleteReservationSummary(reservation: BackendReservation) {
   const hasItems = Boolean(reservation.items && reservation.items.length > 0)
-  return Boolean(reservation.roomName && (reservation.timeRangeText || hasItems))
+  // 审核列表接口有时只返回房间和时间摘要，缺少 items 会导致场次数和联系方式展示不完整。
+  return Boolean(reservation.roomName && hasItems)
 }
 
 async function fillReservationDetail(reservation: BackendReservation) {
@@ -73,7 +85,8 @@ const pendingQuery = useQuery({
       bookingDateStart: bookingDateStart.value || undefined,
       bookingDateEnd: bookingDateEnd.value || undefined,
     })
-    return toUiReservations(result.rows)
+    const detailRows = await Promise.all(result.rows.map(fillReservationDetail))
+    return toUiReservations(detailRows)
   },
 })
 
@@ -84,7 +97,8 @@ const cancelPendingQuery = useQuery({
       bookingDateStart: bookingDateStart.value || undefined,
       bookingDateEnd: bookingDateEnd.value || undefined,
     })
-    return toUiReservations(result.rows)
+    const detailRows = await Promise.all(result.rows.map(fillReservationDetail))
+    return toUiReservations(detailRows)
   },
   enabled: computed(() => activeTab.value === 'cancel'),
 })
@@ -114,6 +128,10 @@ function getReservationDates(reservation: Reservation) {
   if (sessionDates.length > 0) return sessionDates
 
   return reservation.date.match(/\d{4}-\d{2}-\d{2}/g) ?? []
+}
+
+function formatAuditMeta(reservation: Reservation) {
+  return [reservation.auditStageText, reservation.roomName || '待选择房间'].filter(Boolean).join(' · ')
 }
 
 function isDateMatched(reservation: Reservation) {
@@ -160,6 +178,11 @@ const selectedCount = computed(() => selectedIds.value.length)
 const allFilteredSelected = computed(() => {
   return filteredReservations.value.length > 0 && filteredReservations.value.every((item) => selectedIds.value.includes(item.id))
 })
+const isReturnBatch = computed(() => returnTargetIds.value.length > 1)
+const returnPanelTitle = computed(() => (isReturnBatch.value ? '批量退回修改' : '退回修改'))
+const returnPanelDescription = computed(() =>
+  isReturnBatch.value ? `将选中的 ${returnTargetIds.value.length} 条预约退回给申请人修改` : '将该预约退回给申请人修改',
+)
 
 async function refreshAuditList() {
   await queryClient.invalidateQueries({ queryKey: ['h5-pending-reservations'] })
@@ -193,17 +216,25 @@ function toggleSelectAll() {
 }
 
 async function approveItem(reservationId: string) {
+  const isCancelAudit = activeTab.value === 'cancel'
   try {
-    await showConfirmDialog({ title: '通过预约', message: '确认审核通过这条预约吗？' })
+    await showConfirmDialog({
+      title: isCancelAudit ? '同意取消' : '通过预约',
+      message: isCancelAudit ? '确认同意这条预约的取消申请吗？' : '确认审核通过这条预约吗？',
+    })
   } catch {
     return
   }
 
   operatingId.value = reservationId
   try {
-    await approveReservation(reservationId)
+    if (isCancelAudit) {
+      await approveCancelReservation(reservationId)
+    } else {
+      await approveReservation(reservationId)
+    }
     await refreshAuditList()
-    showToast('已通过')
+    showToast(isCancelAudit ? '已同意取消' : '已通过')
   } catch (error) {
     showToast(error instanceof Error ? error.message : '审核失败')
   } finally {
@@ -212,17 +243,25 @@ async function approveItem(reservationId: string) {
 }
 
 async function rejectItem(reservationId: string) {
+  const isCancelAudit = activeTab.value === 'cancel'
   try {
-    await showConfirmDialog({ title: '驳回预约', message: '确认驳回这条预约吗？' })
+    await showConfirmDialog({
+      title: isCancelAudit ? '驳回取消' : '驳回预约',
+      message: isCancelAudit ? '确认驳回这条预约的取消申请吗？' : '确认驳回这条预约吗？',
+    })
   } catch {
     return
   }
 
   operatingId.value = reservationId
   try {
-    await rejectReservation(reservationId)
+    if (isCancelAudit) {
+      await rejectCancelReservation(reservationId)
+    } else {
+      await rejectReservation(reservationId)
+    }
     await refreshAuditList()
-    showToast('已驳回')
+    showToast(isCancelAudit ? '已驳回取消' : '已驳回')
   } catch (error) {
     showToast(error instanceof Error ? error.message : '审核失败')
   } finally {
@@ -283,6 +322,50 @@ async function rejectSelected() {
     operatingId.value = ''
   }
 }
+
+function openReturnPanel(reservationId?: string) {
+  const ids = reservationId ? [reservationId] : [...selectedIds.value]
+  if (ids.length === 0) {
+    showToast('请先选择预约')
+    return
+  }
+
+  returnTargetIds.value = ids
+  returnReason.value = ''
+  showReturnPanel.value = true
+}
+
+async function submitReturnAudit() {
+  const reason = returnReason.value.trim()
+  if (!reason) {
+    showToast('请填写退回修改原因')
+    return
+  }
+
+  returnSubmitting.value = true
+  operatingId.value = isReturnBatch.value ? 'batch' : returnTargetIds.value[0] || ''
+
+  try {
+    const results = await Promise.allSettled(returnTargetIds.value.map((id) => returnReservation(id, reason)))
+    const successCount = results.filter((result) => result.status === 'fulfilled').length
+    const failureMessages = results
+      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+      .map((result) => (result.reason instanceof Error ? result.reason.message : '处理失败'))
+
+    await refreshAuditList()
+    showReturnPanel.value = false
+    if (failureMessages.length) {
+      showToast(`已退回 ${successCount} 条，失败 ${failureMessages.length} 条`)
+    } else {
+      showToast(isReturnBatch.value ? `批量退回完成，共 ${successCount} 条` : '已退回修改')
+    }
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : '退回修改失败')
+  } finally {
+    returnSubmitting.value = false
+    operatingId.value = ''
+  }
+}
 </script>
 
 <template>
@@ -290,9 +373,9 @@ async function rejectSelected() {
     <header class="glass-header">
       <div class="header-row">
         <div>
-          <p class="eyebrow">管理员工作台</p>
+          <p class="eyebrow">{{ workbenchTitle }}</p>
           <h1 class="title">预约审核</h1>
-          <p class="sub-title">快速处理待审核与取消申请</p>
+          <p class="sub-title">{{ workbenchSubtitle }}</p>
         </div>
         <button class="icon-button" type="button" @click="router.push('/messages')">
           <Bell :size="21" />
@@ -332,6 +415,9 @@ async function rejectSelected() {
       <span>已选 {{ selectedCount }} 条</span>
       <button type="button" :disabled="selectedCount === 0 || operatingId === 'batch'" @click="approveSelected">批量通过</button>
       <button type="button" :disabled="selectedCount === 0 || operatingId === 'batch'" @click="rejectSelected">批量驳回</button>
+      <button type="button" :disabled="selectedCount === 0 || operatingId === 'batch'" @click="openReturnPanel()">
+        批量退回
+      </button>
     </section>
 
     <section class="stack">
@@ -353,29 +439,41 @@ async function rejectSelected() {
           </div>
           <StatusBadge :status="reservation.status" />
         </div>
-        <p class="muted">{{ reservation.roomName }} · {{ reservation.date }} · {{ reservation.time }}</p>
+        <p class="muted">{{ formatAuditMeta(reservation) }}</p>
+        <p class="muted">联系方式：{{ reservation.applicantPhone || '-' }}</p>
+        <p class="muted">{{ reservation.date }} · {{ reservation.time }}</p>
         <p>共 {{ reservation.sessions.length }} 个场次 · {{ reservation.people }} 人</p>
         <div class="audit-actions">
-          <button class="plain-button" type="button" @click="router.push(`/reservation/${reservation.id}`)">
+          <button class="plain-button" type="button" @click="router.push(`/reservation/${reservation.id}?from=audit`)">
             详情
           </button>
           <button
-            v-if="activeTab === 'pending'"
+            v-if="activeTab === 'pending' || activeTab === 'cancel'"
             class="approve"
             type="button"
             :disabled="operatingId === reservation.id"
             @click="approveItem(reservation.id)"
           >
-            通过
+            {{ activeTab === 'cancel' ? '同意取消' : '通过' }}
           </button>
           <button
-            v-if="activeTab === 'pending'"
+            v-if="activeTab === 'pending' || activeTab === 'cancel'"
             class="reject"
             type="button"
             :disabled="operatingId === reservation.id"
             @click="rejectItem(reservation.id)"
           >
-            驳回
+            {{ activeTab === 'cancel' ? '驳回取消' : '驳回' }}
+          </button>
+          <button
+            v-if="activeTab === 'pending'"
+            class="return"
+            type="button"
+            :disabled="operatingId === reservation.id || operatingId === 'batch'"
+            @click="openReturnPanel(reservation.id)"
+          >
+            <RotateCcw :size="15" />
+            退回修改
           </button>
         </div>
       </article>
@@ -454,6 +552,33 @@ async function rejectSelected() {
     :max-date="calendarMaxDate"
     @confirm="confirmDateRange"
   />
+
+  <van-popup v-model:show="showReturnPanel" position="bottom" round safe-area-inset-bottom>
+    <section class="return-panel">
+      <header class="filter-panel__head">
+        <div>
+          <strong>{{ returnPanelTitle }}</strong>
+          <span>{{ returnPanelDescription }}</span>
+        </div>
+        <button type="button" :disabled="returnSubmitting" @click="showReturnPanel = false">关闭</button>
+      </header>
+
+      <label class="return-reason">
+        <span>退回原因 *</span>
+        <textarea
+          v-model.trim="returnReason"
+          rows="4"
+          maxlength="200"
+          placeholder="请说明需要申请人修改的内容"
+          :disabled="returnSubmitting"
+        ></textarea>
+      </label>
+
+      <button class="filter-confirm" type="button" :disabled="returnSubmitting" @click="submitReturnAudit">
+        {{ returnSubmitting ? '提交中' : '确认退回修改' }}
+      </button>
+    </section>
+  </van-popup>
 </template>
 
 <style scoped>
@@ -511,12 +636,20 @@ async function rejectSelected() {
 
 .audit-search input {
   width: 100%;
+  height: 100%;
   min-width: 0;
   color: var(--space-text);
   background: transparent;
   border: 0;
   outline: 0;
   font-size: 15px;
+  font-weight: 500;
+  line-height: 1.25;
+}
+
+.audit-search input::placeholder {
+  color: var(--space-muted);
+  font-weight: 500;
 }
 
 .filter-button {
@@ -551,7 +684,7 @@ async function rejectSelected() {
 
 .batch-bar {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
   align-items: center;
   gap: 8px;
   margin-bottom: 12px;
@@ -559,6 +692,11 @@ async function rejectSelected() {
   background: #fff;
   border: 1px solid var(--space-line);
   border-radius: 16px;
+}
+
+.batch-bar button:first-child,
+.batch-bar span {
+  grid-row: 1;
 }
 
 .batch-bar button {
@@ -576,6 +714,11 @@ async function rejectSelected() {
 }
 
 .batch-bar button:last-child {
+  color: #9a5b00;
+  background: #fff7e6;
+}
+
+.batch-bar button:nth-last-child(2) {
   color: var(--space-red);
   background: #feecec;
 }
@@ -620,7 +763,12 @@ async function rejectSelected() {
 }
 
 .approve,
-.reject {
+.reject,
+.return {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
   min-height: 36px;
   padding: 0 13px;
   border: 0;
@@ -638,8 +786,14 @@ async function rejectSelected() {
   background: #feecec;
 }
 
+.return {
+  color: #9a5b00;
+  background: #fff7e6;
+}
+
 .approve:disabled,
-.reject:disabled {
+.reject:disabled,
+.return:disabled {
   opacity: 0.68;
 }
 
@@ -755,6 +909,46 @@ async function rejectSelected() {
   font-weight: 850;
 }
 
+.return-panel {
+  padding: 18px 18px calc(env(safe-area-inset-bottom) + 18px);
+  background: #fff;
+}
+
+.return-reason {
+  display: grid;
+  gap: 9px;
+}
+
+.return-reason span {
+  color: var(--space-text);
+  font-size: 15px;
+  font-weight: 850;
+}
+
+.return-reason textarea {
+  width: 100%;
+  min-height: 112px;
+  padding: 12px;
+  color: var(--space-text);
+  background: #f6f9fe;
+  border: 1px solid var(--space-line);
+  border-radius: 14px;
+  outline: 0;
+  resize: none;
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.return-reason textarea:focus {
+  border-color: rgba(22, 119, 255, 0.5);
+  box-shadow: 0 0 0 3px rgba(22, 119, 255, 0.08);
+}
+
+.return-reason textarea:disabled,
+.filter-confirm:disabled {
+  opacity: 0.64;
+}
+
 @media (max-width: 380px) {
   .audit-toolbar {
     gap: 7px;
@@ -771,6 +965,11 @@ async function rejectSelected() {
 
   .batch-bar {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .batch-bar button:first-child,
+  .batch-bar span {
+    grid-row: auto;
   }
 }
 </style>

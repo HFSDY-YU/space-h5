@@ -1,20 +1,25 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { showToast } from 'vant'
-import { ArrowLeft, KeyRound, LockKeyhole, ShieldCheck } from '@lucide/vue'
+import { ArrowLeft, KeyRound, LockKeyhole, LogOut, ShieldAlert, ShieldCheck } from '@lucide/vue'
 import { updatePassword } from '@/api/auth'
 import { useSessionStore } from '@/stores/session'
 
 const router = useRouter()
+const route = useRoute()
 const session = useSessionStore()
 const passwordLoading = ref(false)
+const logoutLoading = ref(false)
 const passwordForm = reactive({
   oldPassword: '',
   newPassword: '',
   confirmPassword: '',
 })
 
+const strongPasswordRule =
+  /^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)(?=.*[~!@#$%^&*()\-=_+])[A-Za-z\d~!@#$%^&*()\-=_+]{8,20}$/
+const isForceChange = computed(() => session.mustChangePassword || route.query.force === '1')
 const canSubmit = computed(() => {
   return Boolean(passwordForm.oldPassword && passwordForm.newPassword && passwordForm.confirmPassword)
 })
@@ -31,8 +36,13 @@ async function submitPassword() {
     return
   }
 
-  if (passwordForm.newPassword.length < 6) {
-    showToast('新密码至少 6 位')
+  if (!strongPasswordRule.test(passwordForm.newPassword)) {
+    showToast('新密码需 8-20 位，含大小写字母、数字和特殊字符')
+    return
+  }
+
+  if (passwordForm.oldPassword === passwordForm.newPassword) {
+    showToast('新密码不能与旧密码相同')
     return
   }
 
@@ -47,8 +57,17 @@ async function submitPassword() {
       oldPassword: passwordForm.oldPassword,
       newPassword: passwordForm.newPassword,
     })
-    showToast('密码已修改，请重新登录')
     resetPasswordForm()
+    session.setPasswordSecurityState({ mustChange: false, expired: false })
+
+    if (isForceChange.value) {
+      showToast('密码已修改')
+      await session.refreshProfile()
+      router.replace('/home')
+      return
+    }
+
+    showToast('密码已修改，请重新登录')
     await session.logout()
     router.replace('/login')
   } catch (error) {
@@ -57,25 +76,37 @@ async function submitPassword() {
     passwordLoading.value = false
   }
 }
+
+async function handleLogout() {
+  logoutLoading.value = true
+  try {
+    await session.logout()
+    router.replace('/login')
+  } finally {
+    logoutLoading.value = false
+  }
+}
 </script>
 
 <template>
   <main class="safe-page password-page">
     <header class="detail-nav">
-      <button type="button" aria-label="返回" @click="router.back()">
+      <button v-if="!isForceChange" type="button" aria-label="返回" @click="router.back()">
         <ArrowLeft :size="20" />
       </button>
+      <span v-else></span>
       <strong>修改密码</strong>
       <span></span>
     </header>
 
-    <section class="password-hero">
+    <section class="password-hero" :class="{ 'password-hero--force': isForceChange }">
       <div class="hero-icon">
-        <LockKeyhole :size="30" />
+        <ShieldAlert v-if="isForceChange" :size="30" />
+        <LockKeyhole v-else :size="30" />
       </div>
       <div>
-        <h1>账号安全</h1>
-        <p>修改后需要使用新密码重新登录。</p>
+        <h1>{{ isForceChange ? '请先修改初始密码' : '账号安全' }}</h1>
+        <p>{{ isForceChange ? '当前密码为初始或临时密码，修改后才可继续使用系统。' : '修改后需要使用新密码重新登录。' }}</p>
       </div>
     </section>
 
@@ -100,15 +131,19 @@ async function submitPassword() {
     <section class="tips-card">
       <article>
         <KeyRound :size="18" />
-        <span>新密码至少 6 位，且不能与旧密码相同。</span>
+        <span>新密码需 8-20 位，并同时包含大写字母、小写字母、数字和特殊字符。</span>
       </article>
       <article>
         <ShieldCheck :size="18" />
-        <span>提交成功后系统会清理当前登录状态。</span>
+        <span>{{ isForceChange ? '保存成功后即可继续使用系统。' : '提交成功后系统会清理当前登录状态。' }}</span>
       </article>
     </section>
 
-    <section class="fixed-actions">
+    <section class="fixed-actions password-actions" :class="{ 'password-actions--force': isForceChange }">
+      <van-button v-if="isForceChange" block round plain type="primary" :loading="logoutLoading" @click="handleLogout">
+        <LogOut :size="16" />
+        退出登录
+      </van-button>
       <van-button block round type="primary" :loading="passwordLoading" :disabled="!canSubmit" @click="submitPassword">
         保存新密码
       </van-button>
@@ -157,6 +192,12 @@ async function submitPassword() {
     linear-gradient(135deg, rgba(22, 119, 255, 0.96), rgba(15, 87, 214, 0.92)),
     #1677ff;
   border-radius: 20px;
+}
+
+.password-hero--force {
+  background:
+    linear-gradient(135deg, rgba(245, 158, 11, 0.98), rgba(217, 119, 6, 0.94)),
+    #f59e0b;
 }
 
 .hero-icon {
@@ -234,5 +275,23 @@ async function submitPassword() {
 
 .tips-card svg {
   color: var(--space-blue);
+}
+
+.password-actions {
+  grid-template-columns: 1fr;
+}
+
+.password-actions--force {
+  grid-template-columns: 0.9fr 1.1fr;
+}
+
+.password-actions :deep(.van-button__content) {
+  gap: 6px;
+}
+
+@media (max-width: 360px) {
+  .password-actions--force {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

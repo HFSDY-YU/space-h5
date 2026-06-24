@@ -1,9 +1,16 @@
 <script setup lang="ts">
-import { computed, reactive } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { showToast } from 'vant'
-import { ArrowLeft, CalendarDays, Clock3, XCircle } from '@lucide/vue'
-import { addDays, formatDateValue } from '@/services/spaceMapper'
+import { ArrowLeft, CalendarDays, XCircle } from '@lucide/vue'
+import {
+  BOOKABLE_SLOT_MINUTES,
+  addDays,
+  buildBookableTimeSlots,
+  formatDateValue,
+  isAlignedBookableRange,
+  timeToMinutes,
+} from '@/services/spaceMapper'
 import {
   LONG_RESERVATION_MODE_LABELS,
   LONG_RESERVATION_RULE_TYPES,
@@ -32,32 +39,45 @@ const modeOptions: Array<{ value: LongReservationMode; label: string; tip: strin
   { value: 'custom', label: '自定义', tip: '多日期多时段' },
 ]
 
-const fixedTimeRanges: LongReservationTimeRange[] = [
-  { id: 'morning', name: '上午', startTime: '08:30', endTime: '13:30' },
-  { id: 'afternoon', name: '下午', startTime: '14:00', endTime: '18:00' },
-  { id: 'evening', name: '晚间', startTime: '18:30', endTime: '22:30' },
-]
+const timeSlots = buildBookableTimeSlots().map((slot) =>
+  createTimeRange(slot.startTime, slot.endTime || slot.time.split('-')[1] || slot.startTime),
+)
+const timelineStartMinute = timeToMinutes('08:30')
+const timelineEndMinute = timeToMinutes('22:30')
+const timelineMiddleText = '15:30'
+const defaultTimeRange = createTimeRange('08:30', '09:00')
+const agendaSlotHeight = 64
+const agendaSlotGap = 8
 
 const form = reactive({
   mode: 'weekly' as LongReservationMode,
   startDate: today,
   endDate: nextMonth,
   weekdays: ['1'],
+  weekdayTimeRanges: {
+    '1': [defaultTimeRange],
+  } as Record<string, LongReservationTimeRange[]>,
   customSlots: [] as LongReservationCustomDateSlot[],
-  selectedTimeRangeIds: ['morning'],
+  timeRanges: [defaultTimeRange] as LongReservationTimeRange[],
 })
+const activeWeekday = ref('1')
 
 const customPicker = reactive({
   open: false,
   step: 'date' as 'date' | 'time',
   monthDate: new Date(today),
   selectedDate: today,
-  selectedTimeRangeIds: [] as string[],
+  selectedRanges: [defaultTimeRange] as LongReservationTimeRange[],
 })
 
-const normalizedTimeRanges = computed(() =>
-  form.mode === 'custom' ? [] : fixedTimeRanges.filter((range) => form.selectedTimeRangeIds.includes(range.id)),
+const normalizedTimeRanges = computed<LongReservationTimeRange[]>(() =>
+  form.mode === 'custom' ? [] : form.mode === 'weekly' ? normalizedWeekdayRanges.value : normalizedDailyRanges.value,
 )
+const normalizedDailyRanges = computed(() => normalizeRanges(form.timeRanges))
+const normalizedWeekdayRanges = computed(() =>
+  form.weekdays.flatMap((weekday) => getWeekdayRanges(weekday).map((range) => ({ ...range, name: weekdayLabel(weekday) }))),
+)
+const activeWeekdayRanges = computed(() => getWeekdayRanges(activeWeekday.value))
 const customSlots = computed(() => [...form.customSlots].sort((prev, next) => prev.date.localeCompare(next.date)))
 const customSlotCount = computed(() =>
   customSlots.value.reduce((total, slot) => total + slot.timeRanges.length, 0),
@@ -65,13 +85,15 @@ const customSlotCount = computed(() =>
 const pickedDates = computed(() => buildPickedDates())
 const dateSummary = computed(() => {
   const dates = pickedDates.value
-  if (!dates.length) return '暂无日期'
-  if (form.mode === 'custom') return `${dates.length} 个日期`
-  return `${dates[0]} 至 ${dates[dates.length - 1]}`
+  if (form.mode === 'custom') {
+    return dates.length ? `${dates.length} 个日期` : '暂无日期'
+  }
+  if (!form.startDate || !form.endDate) return '暂无日期'
+  return `${form.startDate} 至 ${form.endDate}`
 })
 const summaryTimeCount = computed(() => (form.mode === 'custom' ? customSlotCount.value : normalizedTimeRanges.value.length))
 const totalSlotCount = computed(() =>
-  form.mode === 'custom' ? customSlotCount.value : pickedDates.value.length * normalizedTimeRanges.value.length,
+  form.mode === 'custom' ? customSlotCount.value : buildFixedRuleSlots().length,
 )
 const canPickRoom = computed(() => pickedDates.value.length > 0)
 const calendarMonthTitle = computed(
@@ -94,10 +116,44 @@ const calendarDays = computed(() => {
     }
   })
 })
+const weeklyTimelineRows = computed(() =>
+  weekdayOptions.map((weekday) => {
+    const firstDate = getFirstDateForWeekday(weekday.value)
+    return {
+      ...weekday,
+      enabled: form.weekdays.includes(weekday.value),
+      ranges: getWeekdayRanges(weekday.value),
+      date: firstDate,
+      dateText: formatMonthDay(firstDate),
+      titleText: formatAgendaDateTitle(firstDate, weekday.label),
+      today: firstDate === today,
+    }
+  }),
+)
+const dailyTimelineRows = computed(() => [
+  {
+    value: 'daily',
+    label: '每日',
+    enabled: true,
+    ranges: normalizedDailyRanges.value,
+    dateText: dateSummary.value,
+    today: false,
+  },
+])
+
+watch(
+  () => form.weekdays,
+  (weekdays) => {
+    if (!weekdays.length) return
+    if (!weekdays.includes(activeWeekday.value)) {
+      activeWeekday.value = weekdays[0] ?? '1'
+    }
+  },
+)
 
 function buildDateRange() {
-  const start = new Date(form.startDate)
-  const end = new Date(form.endDate)
+  const start = createLocalDate(form.startDate)
+  const end = createLocalDate(form.endDate)
   if (!form.startDate || !form.endDate || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
     return []
   }
@@ -117,27 +173,258 @@ function buildPickedDates() {
   const dateRange = buildDateRange()
   if (form.mode === 'daily') return dateRange
 
-  return dateRange.filter((date) => form.weekdays.includes(String(new Date(date).getDay())))
+  return dateRange.filter((date) => form.weekdays.includes(String(createLocalDate(date).getDay())))
+}
+
+function getTodayMinBookableMinute() {
+  const now = new Date()
+  const currentMinutes = now.getHours() * 60 + now.getMinutes()
+  const alignedMinutes = Math.ceil(currentMinutes / BOOKABLE_SLOT_MINUTES) * BOOKABLE_SLOT_MINUTES
+  return Math.max(timelineStartMinute, alignedMinutes)
+}
+
+function isFutureRuleRange(date: string, range: LongReservationTimeRange) {
+  if (date > today) return true
+  if (date < today) return false
+  return timeToMinutes(range.startTime) >= getTodayMinBookableMinute()
+}
+
+function expandRangeToTimeSlots(range: LongReservationTimeRange) {
+  return timeSlots
+    .filter((slot) => slot.startTime >= range.startTime && slot.endTime <= range.endTime)
+    .map((slot) => ({ ...slot, name: range.name }))
+}
+
+function buildActualRuleSlots() {
+  if (form.mode === 'custom') {
+    return customSlots.value.flatMap((slot) =>
+      slot.timeRanges.flatMap((range) =>
+        expandRangeToTimeSlots(range)
+          .filter((timeSlot) => isFutureRuleRange(slot.date, timeSlot))
+          .map((timeSlot) => ({ date: slot.date, range: timeSlot })),
+      ),
+    )
+  }
+
+  return buildFixedRuleSlots().flatMap((slot) =>
+    expandRangeToTimeSlots(slot.range)
+      .filter((timeSlot) => isFutureRuleRange(slot.date, timeSlot))
+      .map((timeSlot) => ({ date: slot.date, range: timeSlot })),
+  )
+}
+
+function buildResolvedSlots() {
+  const slots = buildActualRuleSlots()
+  const slotMap = new Map<string, LongReservationTimeRange[]>()
+  for (const slot of slots) {
+    const ranges = slotMap.get(slot.date) ?? []
+    ranges.push({ ...slot.range })
+    slotMap.set(slot.date, ranges)
+  }
+
+  return [...slotMap.entries()].map(([date, timeRanges]) => ({
+    date,
+    timeRanges: normalizeRanges(timeRanges),
+  }))
+}
+
+function createTimeRange(startTime: string, endTime: string, name = '预约时间'): LongReservationTimeRange {
+  return {
+    id: `${startTime}-${endTime}`,
+    name,
+    startTime,
+    endTime,
+  }
+}
+
+function weekdayLabel(weekday: string) {
+  return weekdayOptions.find((option) => option.value === weekday)?.label ?? '周几'
+}
+
+function createLocalDate(date: string) {
+  const [year = 0, month = 1, day = 1] = date.split('-').map(Number)
+  return new Date(year, month - 1, day)
+}
+
+function formatMonthDay(date: string) {
+  if (!date) return '--/--'
+  const [, month = '', day = ''] = date.split('-')
+  return `${Number(month)}/${Number(day)}`
+}
+
+function getWeekdayLabelByDate(date: string) {
+  if (!date) return ''
+  const weekday = String(createLocalDate(date).getDay())
+  return weekdayLabel(weekday)
+}
+
+// 纵向日程面板需要展示真实日期，方便用户确认当前正在编辑的是哪一天的规则。
+function getFirstDateForWeekday(weekday: string) {
+  return buildDateRange().find((item) => String(createLocalDate(item).getDay()) === weekday) ?? ''
+}
+
+function formatAgendaDateTitle(date: string, fallbackLabel = '预约时间') {
+  if (!date) return `${fallbackLabel}预约时间`
+  return `${date} ${getWeekdayLabelByDate(date)}`
+}
+
+function normalizeRanges(ranges: LongReservationTimeRange[]) {
+  const orderedRanges = [...ranges].sort((prev, next) => timeToMinutes(prev.startTime) - timeToMinutes(next.startTime))
+  const normalizedRanges: LongReservationTimeRange[] = []
+
+  for (const range of orderedRanges) {
+    if (!isAlignedBookableRange(range.startTime, range.endTime)) continue
+    const lastRange = normalizedRanges[normalizedRanges.length - 1]
+    if (lastRange && lastRange.endTime === range.startTime) {
+      lastRange.endTime = range.endTime
+      lastRange.id = `${lastRange.startTime}-${lastRange.endTime}`
+      continue
+    }
+    normalizedRanges.push(createTimeRange(range.startTime, range.endTime, range.name))
+  }
+
+  return normalizedRanges
+}
+
+function getWeekdayRanges(weekday: string) {
+  // 用户没有为某个星期点选时段时保持为空，避免提交时夹带隐藏默认时段。
+  if (Object.prototype.hasOwnProperty.call(form.weekdayTimeRanges, weekday)) {
+    return normalizeRanges(form.weekdayTimeRanges[weekday] ?? [])
+  }
+  return []
+}
+
+function setWeekdayRanges(weekday: string, ranges: LongReservationTimeRange[]) {
+  form.weekdayTimeRanges[weekday] = normalizeRanges(ranges).map((range) => ({ ...range, name: weekdayLabel(weekday) }))
+}
+
+function isSlotInRanges(slot: LongReservationTimeRange, ranges: LongReservationTimeRange[]) {
+  return ranges.some((range) => slot.startTime >= range.startTime && slot.endTime <= range.endTime)
+}
+
+function getRangeTimelineStyle(range: LongReservationTimeRange) {
+  const startMinute = Math.max(timeToMinutes(range.startTime), timelineStartMinute)
+  const endMinute = Math.min(timeToMinutes(range.endTime), timelineEndMinute)
+  const totalMinutes = timelineEndMinute - timelineStartMinute
+  const left = totalMinutes ? ((startMinute - timelineStartMinute) / totalMinutes) * 100 : 0
+  const width = totalMinutes ? ((endMinute - startMinute) / totalMinutes) * 100 : 0
+
+  return {
+    left: `${Math.max(0, left)}%`,
+    width: `${Math.max(3, width)}%`,
+  }
+}
+
+function getAgendaRangeStyle(range: LongReservationTimeRange) {
+  const startIndex = timeSlots.findIndex((slot) => slot.startTime === range.startTime)
+  const normalizedStartIndex = Math.max(0, startIndex)
+  const durationMinutes = Math.max(BOOKABLE_SLOT_MINUTES, timeToMinutes(range.endTime) - timeToMinutes(range.startTime))
+  const slotCount = Math.max(1, Math.round(durationMinutes / BOOKABLE_SLOT_MINUTES))
+  const top = normalizedStartIndex * (agendaSlotHeight + agendaSlotGap)
+  const height = slotCount * agendaSlotHeight + Math.max(0, slotCount - 1) * agendaSlotGap
+
+  return {
+    top: `${top}px`,
+    height: `${height}px`,
+  }
+}
+
+function toggleRangeSlot(slot: LongReservationTimeRange, ranges: LongReservationTimeRange[]) {
+  const nextRanges = [...ranges]
+  const containingIndex = nextRanges.findIndex((range) => slot.startTime >= range.startTime && slot.endTime <= range.endTime)
+
+  if (containingIndex >= 0) {
+    const currentRange = nextRanges[containingIndex]
+    if (!currentRange) return normalizeRanges(nextRanges)
+    nextRanges.splice(containingIndex, 1)
+    if (currentRange.startTime < slot.startTime) {
+      nextRanges.push(createTimeRange(currentRange.startTime, slot.startTime, currentRange.name))
+    }
+    if (slot.endTime < currentRange.endTime) {
+      nextRanges.push(createTimeRange(slot.endTime, currentRange.endTime, currentRange.name))
+    }
+    return normalizeRanges(nextRanges)
+  }
+
+  nextRanges.push(createTimeRange(slot.startTime, slot.endTime, slot.name))
+  return normalizeRanges(nextRanges)
+}
+
+function toggleDailyTimeSlot(slot: LongReservationTimeRange) {
+  const nextRanges = toggleRangeSlot(slot, form.timeRanges)
+  form.timeRanges = nextRanges.length ? nextRanges : []
+}
+
+function toggleWeekdayTimeSlot(weekday: string, slot: LongReservationTimeRange) {
+  const nextRanges = toggleRangeSlot({ ...slot, name: weekdayLabel(weekday) }, getWeekdayRanges(weekday))
+  setWeekdayRanges(weekday, nextRanges)
+  if (nextRanges.length && !form.weekdays.includes(weekday)) {
+    form.weekdays = [...form.weekdays, weekday].sort((prev, next) => Number(prev) - Number(next))
+  }
+  if (!nextRanges.length) {
+    form.weekdays = form.weekdays.filter((item) => item !== weekday)
+  }
+}
+
+function toggleCustomTimeSlot(slot: LongReservationTimeRange) {
+  customPicker.selectedRanges = toggleRangeSlot(slot, customPicker.selectedRanges)
+}
+
+function removeExactRange(ranges: LongReservationTimeRange[], target: LongReservationTimeRange) {
+  return normalizeRanges(
+    ranges.filter((range) => !(range.startTime === target.startTime && range.endTime === target.endTime)),
+  )
+}
+
+function removeWeekdayTimeRange(weekday: string, range: LongReservationTimeRange) {
+  const nextRanges = removeExactRange(getWeekdayRanges(weekday), range)
+  setWeekdayRanges(weekday, nextRanges)
+  if (!nextRanges.length) {
+    form.weekdays = form.weekdays.filter((item) => item !== weekday)
+  }
+}
+
+function removeDailyTimeRange(range: LongReservationTimeRange) {
+  form.timeRanges = removeExactRange(form.timeRanges, range)
+}
+
+function removeCustomTimeRange(range: LongReservationTimeRange) {
+  customPicker.selectedRanges = removeExactRange(customPicker.selectedRanges, range)
+}
+
+function toggleTimelineRow(weekday: string) {
+  activeWeekday.value = activeWeekday.value === weekday ? '' : weekday
+}
+
+function formatRangesText(ranges: LongReservationTimeRange[]) {
+  const normalizedRanges = normalizeRanges(ranges)
+  if (!normalizedRanges.length) return '未选择时间'
+  return normalizedRanges.map((range) => `${range.startTime}-${range.endTime}`).join('、')
+}
+
+function buildFixedRuleSlots() {
+  if (form.mode === 'custom') return []
+  const dates = pickedDates.value
+  if (form.mode === 'daily') {
+    return dates.flatMap((date) => normalizedDailyRanges.value.map((range) => ({ date, range })))
+  }
+  return dates.flatMap((date) => {
+    const weekday = String(createLocalDate(date).getDay())
+    return getWeekdayRanges(weekday).map((range) => ({ date, range }))
+  })
 }
 
 function toggleWeekday(weekday: string) {
   if (form.weekdays.includes(weekday)) {
     form.weekdays = form.weekdays.filter((item) => item !== weekday)
+    if (activeWeekday.value === weekday) {
+      activeWeekday.value = form.weekdays[0] ?? weekday
+    }
   } else {
     form.weekdays = [...form.weekdays, weekday].sort((prev, next) => Number(prev) - Number(next))
+    setWeekdayRanges(weekday, getWeekdayRanges(weekday))
+    activeWeekday.value = weekday
   }
-}
-
-function toggleTimeRange(id: string) {
-  if (form.selectedTimeRangeIds.includes(id)) {
-    form.selectedTimeRangeIds = form.selectedTimeRangeIds.filter((item) => item !== id)
-    return
-  }
-
-  form.selectedTimeRangeIds = [...form.selectedTimeRangeIds, id].sort(
-    (prev, next) =>
-      fixedTimeRanges.findIndex((range) => range.id === prev) - fixedTimeRanges.findIndex((range) => range.id === next),
-  )
 }
 
 function ensureTimeRangeSelected() {
@@ -150,8 +437,16 @@ function ensureTimeRangeSelected() {
   }
 
   if (!normalizedTimeRanges.value.length) {
-    showToast('请选择至少一个预约时段')
+    showToast('请至少选择一个预约时间段')
     return false
+  }
+  if (form.mode === 'weekly') {
+    const emptyWeekday = form.weekdays.find((weekday) => !getWeekdayRanges(weekday).length)
+    if (emptyWeekday) {
+      activeWeekday.value = emptyWeekday
+      showToast(`请为${weekdayLabel(emptyWeekday)}选择预约时间`)
+      return false
+    }
   }
   return true
 }
@@ -181,33 +476,22 @@ function openCustomTimePicker(date: string) {
 
   customPicker.selectedDate = date
   const existingSlot = form.customSlots.find((slot) => slot.date === date)
-  customPicker.selectedTimeRangeIds = existingSlot?.timeRanges.map((range) => range.id) ?? []
+  customPicker.selectedRanges = existingSlot?.timeRanges.length
+    ? normalizeRanges(existingSlot.timeRanges)
+    : [createTimeRange('08:30', '09:00')]
   customPicker.step = 'time'
 }
 
-function togglePickerTimeRange(id: string) {
-  if (customPicker.selectedTimeRangeIds.includes(id)) {
-    customPicker.selectedTimeRangeIds = customPicker.selectedTimeRangeIds.filter((item) => item !== id)
-    return
-  }
-
-  customPicker.selectedTimeRangeIds = [...customPicker.selectedTimeRangeIds, id].sort(
-    (prev, next) =>
-      fixedTimeRanges.findIndex((range) => range.id === prev) - fixedTimeRanges.findIndex((range) => range.id === next),
-  )
-}
-
 function confirmCustomSlot() {
-  if (!customPicker.selectedTimeRangeIds.length) {
-    showToast('请选择至少一个时段')
+  const nextRanges = normalizeRanges(customPicker.selectedRanges)
+  if (!nextRanges.length) {
+    showToast('请至少选择一个预约时间段')
     return
   }
 
   const nextSlot = {
     date: customPicker.selectedDate,
-    timeRanges: fixedTimeRanges
-      .filter((range) => customPicker.selectedTimeRangeIds.includes(range.id))
-      .map((range) => ({ ...range })),
+    timeRanges: nextRanges.map((range) => ({ ...range, name: '自定义时段' })),
   }
   const existingIndex = form.customSlots.findIndex((slot) => slot.date === nextSlot.date)
   if (existingIndex >= 0) {
@@ -246,23 +530,49 @@ function buildRuleDesc() {
 }
 
 function goPickRoom() {
+  const actualSlots = buildActualRuleSlots()
+  const resolvedSlots = buildResolvedSlots()
+
   if (!pickedDates.value.length) {
     showToast('当前规则没有可预约日期')
     return
   }
   if (!ensureTimeRangeSelected()) return
+  if (!actualSlots.length) {
+    showToast('当前规则内没有可提交的未来时段')
+    return
+  }
 
   saveLongReservationRuleDraft({
     mode: form.mode,
     ruleType: LONG_RESERVATION_RULE_TYPES[form.mode],
-    startDate: pickedDates.value[0] ?? form.startDate,
-    endDate: pickedDates.value[pickedDates.value.length - 1] ?? form.endDate,
+    startDate: form.mode === 'custom' ? (pickedDates.value[0] ?? form.startDate) : form.startDate,
+    endDate:
+      form.mode === 'custom'
+        ? (pickedDates.value[pickedDates.value.length - 1] ?? form.endDate)
+        : form.endDate,
     weekdays: form.mode === 'weekly' ? form.weekdays : [],
+    weekdayTimeRanges:
+      form.mode === 'weekly'
+        ? Object.fromEntries(
+            form.weekdays.map((weekday) => [
+              weekday,
+              getWeekdayRanges(weekday).map((range) => ({ ...range, name: weekdayLabel(weekday) })),
+            ]),
+          )
+        : {},
     customDates: form.mode === 'custom' ? pickedDates.value : [],
-    customSlots: form.mode === 'custom' ? customSlots.value.map((slot) => ({ ...slot })) : [],
+    customSlots:
+      form.mode === 'custom'
+        ? customSlots.value.map((slot) => ({
+            ...slot,
+            timeRanges: slot.timeRanges.map((range) => ({ ...range })),
+          }))
+        : [],
+    resolvedSlots,
     timeRanges: normalizedTimeRanges.value.map((range) => ({ ...range })),
-    dates: pickedDates.value,
-    slotCount: totalSlotCount.value,
+    dates: [...new Set(actualSlots.map((slot) => slot.date))],
+    slotCount: actualSlots.length,
     ruleDesc: buildRuleDesc(),
   })
   router.push('/reservation/long/rooms')
@@ -313,16 +623,68 @@ function goPickRoom() {
         </label>
       </div>
 
-      <div v-if="form.mode === 'weekly'" class="weekday-grid" aria-label="每周重复星期">
-        <button
-          v-for="day in weekdayOptions"
+      <div v-if="form.mode === 'weekly'" class="week-timeline-list" aria-label="每周预约时间轴">
+        <article
+          v-for="day in weeklyTimelineRows"
           :key="day.value"
-          type="button"
-          :class="{ active: form.weekdays.includes(day.value) }"
-          @click="toggleWeekday(day.value)"
+          class="week-timeline-row"
+          :class="{ active: activeWeekday === day.value, selected: day.enabled }"
         >
-          {{ day.label }}
-        </button>
+          <button class="week-timeline-main" type="button" @click="toggleTimelineRow(day.value)">
+            <span class="week-date-card" :class="{ today: day.today }">
+              <strong>{{ day.label }}</strong>
+              <small v-if="day.today">今天</small>
+            </span>
+            <span class="week-track-wrap">
+              <span class="week-track">
+                <span
+                  v-for="range in day.enabled ? day.ranges : []"
+                  :key="range.id"
+                  class="week-track-segment"
+                  :style="getRangeTimelineStyle(range)"
+                ></span>
+              </span>
+              <span class="week-track-labels">
+                <span>08:30</span>
+                <span>{{ timelineMiddleText }}</span>
+                <span>22:30</span>
+              </span>
+            </span>
+          </button>
+
+          <Transition name="timeline-edit">
+            <div v-if="activeWeekday === day.value" class="timeline-edit-panel">
+              <div class="agenda-select-board" role="group" :aria-label="`${day.label}半小时预约时间选择`">
+                <div class="agenda-time-column" aria-hidden="true">
+                  <span v-for="slot in timeSlots" :key="`${day.value}-${slot.id}-time`">{{ slot.startTime }}</span>
+                </div>
+                <div class="agenda-slot-column">
+                  <button
+                    v-for="slot in timeSlots"
+                    :key="`${day.value}-${slot.id}`"
+                    type="button"
+                    class="agenda-select-slot"
+                    :class="{ active: isSlotInRanges(slot, day.ranges) }"
+                    :aria-label="`${slot.startTime}-${slot.endTime}${isSlotInRanges(slot, day.ranges) ? '已选择，点击取消' : '可选择，点击添加'}`"
+                    :aria-pressed="isSlotInRanges(slot, day.ranges)"
+                    @click="toggleWeekdayTimeSlot(day.value, slot)"
+                  ></button>
+                  <button
+                    v-for="range in day.ranges"
+                    :key="`range-${day.value}-${range.id}`"
+                    type="button"
+                    class="agenda-selected-range"
+                    :style="getAgendaRangeStyle(range)"
+                    :aria-label="`${range.startTime}-${range.endTime} 已选择，点击取消`"
+                    @click="removeWeekdayTimeRange(day.value, range)"
+                  >
+                    <strong>{{ range.startTime }}-{{ range.endTime }}</strong>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </Transition>
+        </article>
       </div>
 
       <div v-if="form.mode === 'custom'" class="custom-dates">
@@ -343,24 +705,68 @@ function goPickRoom() {
         </div>
       </div>
 
-      <div v-if="form.mode !== 'custom'" class="time-section">
-        <div class="section-row">
-          <h2 class="section-title">预约时间</h2>
-        </div>
+      <div v-if="form.mode === 'daily'" class="week-timeline-list" aria-label="每日预约时间轴">
+        <article v-for="day in dailyTimelineRows" :key="day.value" class="week-timeline-row active selected">
+          <div class="week-timeline-main">
+            <span class="week-date-card today">
+              <strong>{{ day.label }}</strong>
+              <span>固定</span>
+            </span>
+            <span class="week-track-wrap">
+              <span class="week-track">
+                <span
+                  v-for="range in day.ranges"
+                  :key="range.id"
+                  class="week-track-segment"
+                  :style="getRangeTimelineStyle(range)"
+                ></span>
+              </span>
+              <span class="week-track-labels">
+                <span>08:30</span>
+                <span>{{ timelineMiddleText }}</span>
+                <span>22:30</span>
+              </span>
+            </span>
+          </div>
 
-        <div class="fixed-time-grid" aria-label="预约固定时段">
-          <button
-            v-for="range in fixedTimeRanges"
-            :key="range.id"
-            type="button"
-            :class="{ active: form.selectedTimeRangeIds.includes(range.id) }"
-            @click="toggleTimeRange(range.id)"
-          >
-            <Clock3 :size="18" />
-            <strong>{{ range.name }}</strong>
-            <span>{{ range.startTime }}-{{ range.endTime }}</span>
-          </button>
-        </div>
+          <div class="timeline-edit-panel">
+            <div class="time-card-head">
+              <div>
+                <h2 class="section-title">每日预约时间</h2>
+                <p>点击时段添加，再次点击取消</p>
+              </div>
+            </div>
+
+            <div class="agenda-select-board" role="group" aria-label="每日半小时预约时间选择">
+              <div class="agenda-time-column" aria-hidden="true">
+                <span v-for="slot in timeSlots" :key="`daily-${slot.id}-time`">{{ slot.startTime }}</span>
+              </div>
+              <div class="agenda-slot-column">
+                <button
+                  v-for="slot in timeSlots"
+                  :key="`daily-${slot.id}`"
+                  type="button"
+                  class="agenda-select-slot"
+                  :class="{ active: isSlotInRanges(slot, normalizedDailyRanges) }"
+                  :aria-label="`${slot.startTime}-${slot.endTime}${isSlotInRanges(slot, normalizedDailyRanges) ? '已选择，点击取消' : '可选择，点击添加'}`"
+                  :aria-pressed="isSlotInRanges(slot, normalizedDailyRanges)"
+                  @click="toggleDailyTimeSlot(slot)"
+                ></button>
+                <button
+                  v-for="range in normalizedDailyRanges"
+                  :key="`daily-range-${range.id}`"
+                  type="button"
+                  class="agenda-selected-range"
+                  :style="getAgendaRangeStyle(range)"
+                  :aria-label="`${range.startTime}-${range.endTime} 已选择，点击取消`"
+                  @click="removeDailyTimeRange(range)"
+                >
+                  <strong>{{ range.startTime }}-{{ range.endTime }}</strong>
+                </button>
+              </div>
+            </div>
+          </div>
+        </article>
       </div>
 
       <div class="rule-summary">
@@ -419,19 +825,63 @@ function goPickRoom() {
         </div>
 
         <div v-else class="time-picker-panel">
-          <p class="mini">为该日期选择一个或多个预约时段</p>
-          <div class="fixed-time-grid fixed-time-grid--popup" aria-label="自定义日期时段">
-            <button
-              v-for="range in fixedTimeRanges"
-              :key="range.id"
-              type="button"
-              :class="{ active: customPicker.selectedTimeRangeIds.includes(range.id) }"
-              @click="togglePickerTimeRange(range.id)"
-            >
-              <Clock3 :size="18" />
-              <strong>{{ range.name }}</strong>
-              <span>{{ range.startTime }}-{{ range.endTime }}</span>
-            </button>
+          <article class="week-timeline-row active selected">
+            <div class="week-timeline-main">
+              <span class="week-date-card today">
+                <strong>{{ customPicker.selectedDate.slice(5, 7) }}/{{ customPicker.selectedDate.slice(8, 10) }}</strong>
+                <span>自定义</span>
+              </span>
+              <span class="week-track-wrap">
+                <span class="week-track">
+                  <span
+                    v-for="range in customPicker.selectedRanges"
+                    :key="range.id"
+                    class="week-track-segment"
+                    :style="getRangeTimelineStyle(range)"
+                  ></span>
+                </span>
+                <span class="week-track-labels">
+                  <span>08:30</span>
+                  <span>{{ timelineMiddleText }}</span>
+                  <span>22:30</span>
+                </span>
+              </span>
+            </div>
+          </article>
+
+          <div class="time-card-head">
+            <div>
+              <h2 class="section-title">{{ formatAgendaDateTitle(customPicker.selectedDate) }}</h2>
+              <p>点击时段添加，再次点击取消</p>
+            </div>
+          </div>
+          <div class="agenda-select-board" role="group" aria-label="自定义半小时预约时间选择">
+            <div class="agenda-time-column" aria-hidden="true">
+              <span v-for="slot in timeSlots" :key="`custom-${slot.id}-time`">{{ slot.startTime }}</span>
+            </div>
+            <div class="agenda-slot-column">
+              <button
+                v-for="slot in timeSlots"
+                :key="`custom-${slot.id}`"
+                type="button"
+                class="agenda-select-slot"
+                :class="{ active: isSlotInRanges(slot, customPicker.selectedRanges) }"
+                :aria-label="`${slot.startTime}-${slot.endTime}${isSlotInRanges(slot, customPicker.selectedRanges) ? '已选择，点击取消' : '可选择，点击添加'}`"
+                :aria-pressed="isSlotInRanges(slot, customPicker.selectedRanges)"
+                @click="toggleCustomTimeSlot(slot)"
+              ></button>
+              <button
+                v-for="range in customPicker.selectedRanges"
+                :key="`custom-range-${range.id}`"
+                type="button"
+                class="agenda-selected-range"
+                :style="getAgendaRangeStyle(range)"
+                :aria-label="`${range.startTime}-${range.endTime} 已选择，点击取消`"
+                @click="removeCustomTimeRange(range)"
+              >
+                <strong>{{ range.startTime }}-{{ range.endTime }}</strong>
+              </button>
+            </div>
           </div>
           <van-button block round type="primary" @click="confirmCustomSlot">确认添加</van-button>
         </div>
@@ -534,7 +984,8 @@ function goPickRoom() {
   font-size: 13px;
 }
 
-.field-label input {
+.field-label input,
+.picker-field {
   width: 100%;
   min-height: 48px;
   padding: 0 12px;
@@ -545,6 +996,13 @@ function goPickRoom() {
   outline: 0;
 }
 
+.picker-field {
+  display: flex;
+  align-items: center;
+  padding-right: 36px;
+  text-align: left;
+}
+
 .field-label svg {
   position: absolute;
   right: 12px;
@@ -553,13 +1011,6 @@ function goPickRoom() {
   pointer-events: none;
 }
 
-.weekday-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.weekday-grid button,
 .calendar-entry,
 .custom-slot-list button {
   display: inline-flex;
@@ -574,16 +1025,175 @@ function goPickRoom() {
   font-weight: 700;
 }
 
-.weekday-grid button.active {
-  color: var(--space-blue-deep);
-  background: #eaf2ff;
-  border-color: rgba(22, 119, 255, 0.35);
-}
-
 .custom-dates,
-.time-section {
+.time-section,
+.week-timeline-list,
+.timeline-edit-panel {
   display: grid;
   gap: 10px;
+}
+
+.week-timeline-row {
+  display: grid;
+  gap: 0;
+  overflow: hidden;
+  background: #fff;
+  border: 1px solid var(--space-line);
+  border-radius: 16px;
+  box-shadow: 0 8px 20px rgba(54, 89, 150, 0.06);
+}
+
+.week-timeline-row.active {
+  border-color: rgba(22, 119, 255, 0.28);
+}
+
+.week-timeline-main {
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 94px;
+  padding: 10px;
+  color: var(--space-text);
+  text-align: left;
+  background: transparent;
+  border: 0;
+}
+
+.week-date-card {
+  display: grid;
+  place-items: center;
+  min-height: 72px;
+  padding: 9px 8px;
+  background: #f8fbff;
+  border: 1px solid var(--space-line);
+  border-radius: 10px;
+}
+
+.week-date-card strong {
+  color: var(--space-text);
+  font-size: 18px;
+  line-height: 1.1;
+}
+
+.week-date-card span {
+  margin-top: 6px;
+  color: var(--space-subtext);
+  font-size: 14px;
+}
+
+.week-date-card small {
+  margin-top: 2px;
+  color: var(--space-blue);
+  font-size: 12px;
+  font-weight: 850;
+}
+
+.week-date-card.today {
+  background: #f4f9ff;
+  border-color: rgba(22, 119, 255, 0.36);
+}
+
+.week-date-card.today strong,
+.week-date-card.today span {
+  color: var(--space-blue);
+}
+
+.week-track-wrap {
+  display: grid;
+  gap: 13px;
+  min-width: 0;
+}
+
+.week-track {
+  position: relative;
+  display: block;
+  height: 8px;
+  overflow: hidden;
+  background: #edf2f7;
+  border-radius: 999px;
+}
+
+.week-track-segment {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: var(--space-blue);
+  border-radius: 999px;
+  box-shadow: 0 2px 6px rgba(22, 119, 255, 0.2);
+}
+
+.week-track-segment:nth-child(2n) {
+  background: #e38400;
+  box-shadow: 0 2px 6px rgba(227, 132, 0, 0.18);
+}
+
+.week-track-labels {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--space-text);
+  font-size: 15px;
+}
+
+.timeline-edit-panel {
+  padding: 0 12px 12px;
+}
+
+.timeline-edit-enter-active,
+.timeline-edit-leave-active {
+  overflow: hidden;
+  transition:
+    opacity 0.18s ease,
+    transform 0.18s ease,
+    max-height 0.22s ease;
+}
+
+.timeline-edit-enter-from,
+.timeline-edit-leave-to {
+  max-height: 0;
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+.timeline-edit-enter-to,
+.timeline-edit-leave-from {
+  max-height: 2200px;
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.time-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.time-card-head div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.time-card-head p {
+  margin: 0;
+  color: var(--space-subtext);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.time-card-head button {
+  flex: 0 0 auto;
+  min-height: 36px;
+  padding: 0 12px;
+  color: var(--space-blue);
+  background: #fff;
+  border: 1px solid rgba(22, 119, 255, 0.2);
+  border-radius: 12px;
+  font-size: 13px;
+  font-weight: 800;
 }
 
 .calendar-entry {
@@ -641,43 +1251,139 @@ function goPickRoom() {
   margin: 0;
 }
 
-.fixed-time-grid {
+.agenda-select-board {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding-top: 2px;
+}
+
+.agenda-time-column,
+.agenda-slot-column {
+  display: grid;
   gap: 8px;
 }
 
-.fixed-time-grid button {
-  display: grid;
-  min-height: 82px;
-  place-items: center;
-  gap: 4px;
-  padding: 10px 6px;
-  color: var(--space-subtext);
-  background: #f8fbff;
-  border: 1px solid var(--space-line);
-  border-radius: 16px;
+.agenda-time-column span {
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  min-height: 64px;
+  padding-top: 2px;
+  color: #8490a5;
+  font-size: 13px;
+  font-weight: 850;
+  line-height: 1.2;
 }
 
-.fixed-time-grid svg {
-  color: var(--space-blue);
+.agenda-slot-column {
+  position: relative;
+  padding-left: 10px;
 }
 
-.fixed-time-grid strong {
-  color: var(--space-text);
-  font-size: 15px;
+.agenda-slot-column::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 1px;
+  content: '';
+  background: #d8e2ef;
 }
 
-.fixed-time-grid span {
+.agenda-select-slot {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  min-height: 64px;
+  padding: 0 16px;
+  color: transparent;
+  text-align: left;
+  background: linear-gradient(180deg, #f6fbff 0%, #edf6ff 100%);
+  border: 1px solid #d8e9fb;
+  border-radius: 12px;
+  box-shadow: none;
+  transition:
+    background 0.16s ease,
+    border-color 0.16s ease,
+    box-shadow 0.16s ease,
+    transform 0.16s ease;
+}
+
+.agenda-select-slot::before {
+  position: absolute;
+  top: 50%;
+  left: -14px;
+  width: 8px;
+  height: 8px;
+  content: '';
+  background: #d8e2ef;
+  border: 2px solid #fff;
+  border-radius: 999px;
+  transform: translateY(-50%);
+}
+
+.agenda-select-slot.active {
+  background: #f0f7ff;
+  border-color: #b9d8ff;
+}
+
+.agenda-select-slot.active::before {
+  background: var(--space-blue);
+}
+
+.agenda-select-slot:active {
+  transform: scale(0.992);
+}
+
+.agenda-select-slot:focus-visible {
+  outline: 3px solid rgba(22, 119, 255, 0.22);
+  outline-offset: 2px;
+}
+
+.agenda-selected-range {
+  position: absolute;
+  right: 0;
+  left: 10px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  min-height: 64px;
+  padding: 0 16px;
+  color: #fff;
+  text-align: left;
+  background: linear-gradient(180deg, #1c8aff 0%, #0f70dd 100%);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 12px;
+  box-shadow: 0 12px 24px rgba(22, 119, 255, 0.24);
+}
+
+.agenda-selected-range strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 18px;
+  font-weight: 900;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agenda-selected-range:active {
+  transform: scale(0.992);
+}
+
+.agenda-selected-range:focus-visible {
+  outline: 3px solid rgba(22, 119, 255, 0.24);
+  outline-offset: 2px;
+}
+
+.time-tip {
+  margin: -2px 0 0;
   color: var(--space-subtext);
   font-size: 12px;
-}
-
-.fixed-time-grid button.active {
-  color: var(--space-blue-deep);
-  background: #eaf2ff;
-  border-color: rgba(22, 119, 255, 0.35);
-  box-shadow: inset 0 0 0 1px rgba(22, 119, 255, 0.12);
+  line-height: 1.45;
 }
 
 .custom-popup {
@@ -769,10 +1475,6 @@ function goPickRoom() {
   border-radius: 999px;
 }
 
-.fixed-time-grid--popup {
-  grid-template-columns: 1fr;
-}
-
 .rule-summary {
   display: flex;
   flex-wrap: wrap;
@@ -822,12 +1524,19 @@ function goPickRoom() {
     grid-template-columns: 1fr;
   }
 
-  .weekday-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+  .week-timeline-main {
+    grid-template-columns: 74px minmax(0, 1fr);
+    gap: 10px;
+    padding: 8px;
   }
 
-  .fixed-time-grid {
-    grid-template-columns: 1fr;
+  .week-date-card {
+    min-height: 68px;
+  }
+
+  .timeline-edit-panel {
+    padding-right: 8px;
+    padding-left: 8px;
   }
 }
 </style>

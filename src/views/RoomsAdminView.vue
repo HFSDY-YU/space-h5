@@ -2,9 +2,10 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { useQuery } from '@tanstack/vue-query'
 import { useRoute, useRouter } from 'vue-router'
-import { Bell, ChevronRight, Filter, MapPin, Search, Users } from '@lucide/vue'
-import { listRooms } from '@/api/space'
-import { toUiRoomBase } from '@/services/spaceMapper'
+import { showImagePreview } from 'vant'
+import { Bell, Building2, ChevronLeft, ChevronRight, Filter, Layers3, MapPin, Search, Users } from '@lucide/vue'
+import { listFloors, listRooms } from '@/api/space'
+import { resolveSpaceAssetUrl, toUiRoomBase } from '@/services/spaceMapper'
 
 type AdminRoom = ReturnType<typeof toUiRoomBase> & {
   status: string
@@ -20,16 +21,46 @@ interface AdminRoomFilters {
   status: string
 }
 
+interface AdminFloorGroup {
+  name: string
+  roomCount: number
+  rooms: AdminRoom[]
+  imageUrl?: string
+}
+
+interface AdminBuildingGroup {
+  name: string
+  floorCount: number
+  roomCount: number
+  floors: AdminFloorGroup[]
+}
+
 const route = useRoute()
 const router = useRouter()
 const showFilterPanel = ref(false)
+
+function firstQueryValue(value: unknown) {
+  if (Array.isArray(value)) return String(value[0] ?? '')
+  return typeof value === 'string' ? value : ''
+}
+
+function queryText(value: unknown, fallback = '') {
+  return firstQueryValue(value) || fallback
+}
+
+function queryList(value: unknown) {
+  if (Array.isArray(value)) return value.map((item) => String(item)).filter(Boolean)
+  const text = firstQueryValue(value)
+  return text ? [text] : []
+}
+
 const filters = reactive<AdminRoomFilters>({
-  keyword: typeof route.query.keyword === 'string' ? route.query.keyword : '',
-  building: 'all',
-  floor: 'all',
-  type: 'all',
-  equipment: [],
-  status: 'all',
+  keyword: queryText(route.query.keyword),
+  building: queryText(route.query.building, 'all'),
+  floor: queryText(route.query.floor, 'all'),
+  type: queryText(route.query.type, 'all'),
+  equipment: queryList(route.query.equipment),
+  status: queryText(route.query.status, 'all'),
 })
 
 const roomsQuery = useQuery({
@@ -43,8 +74,22 @@ const roomsQuery = useQuery({
     }))
   },
 })
+const floorsQuery = useQuery({
+  queryKey: ['h5-admin-space-floors'],
+  queryFn: async () => {
+    try {
+      const result = await listFloors({ pageSize: 999 })
+      return result.rows
+    } catch {
+      // 楼层图片只影响识别效率；接口暂不可用时继续展示图标，避免阻塞房间管理主流程。
+      return []
+    }
+  },
+  staleTime: 5 * 60_000,
+})
 
 const rooms = computed<AdminRoom[]>(() => roomsQuery.data.value ?? [])
+const floors = computed(() => floorsQuery.data.value ?? [])
 const isLoading = computed(() => roomsQuery.isLoading.value)
 const optionData = computed(() => {
   const buildings = new Set<string>()
@@ -52,13 +97,17 @@ const optionData = computed(() => {
   const types = new Set<string>()
   const equipment = new Set<string>()
 
+  const floorSourceRooms = filters.building === 'all' ? rooms.value : rooms.value.filter((room) => room.building === filters.building)
+
   rooms.value.forEach((room) => {
     if (room.building) buildings.add(room.building)
-    if (room.floor) floors.add(room.floor)
     if (room.type) types.add(room.type)
     room.equipment.forEach((item) => {
       if (item) equipment.add(item)
     })
+  })
+  floorSourceRooms.forEach((room) => {
+    if (room.floor) floors.add(room.floor)
   })
 
   return {
@@ -95,9 +144,87 @@ const filteredRooms = computed(() => {
     return keywordMatched && equipmentMatched && buildingMatched && floorMatched && typeMatched && statusMatched
   })
 })
+const buildingGroups = computed<AdminBuildingGroup[]>(() => {
+  const buildingMap = new Map<string, AdminBuildingGroup>()
+
+  filteredRooms.value.forEach((room) => {
+    const buildingName = room.building || '未设置楼栋'
+    const floorName = room.floor || '未设置楼层'
+    let buildingGroup = buildingMap.get(buildingName)
+    if (!buildingGroup) {
+      buildingGroup = {
+        name: buildingName,
+        floorCount: 0,
+        roomCount: 0,
+        floors: [],
+      }
+      buildingMap.set(buildingName, buildingGroup)
+    }
+
+    let floorGroup = buildingGroup.floors.find((floor) => floor.name === floorName)
+    if (!floorGroup) {
+      const floorInfo = floors.value.find((floor) => {
+        const sameBuilding = floor.buildingName === buildingName
+        const sameFloor = floor.floorNo === floorName || floor.floorName === floorName
+        return sameBuilding && sameFloor
+      })
+      floorGroup = {
+        name: floorName,
+        roomCount: 0,
+        rooms: [],
+        imageUrl: resolveSpaceAssetUrl(floorInfo?.imageUrl),
+      }
+      buildingGroup.floors.push(floorGroup)
+    }
+
+    floorGroup.rooms.push(room)
+    floorGroup.roomCount += 1
+    buildingGroup.roomCount += 1
+  })
+
+  return Array.from(buildingMap.values())
+    .map((buildingGroup) => {
+      buildingGroup.floors.sort((prev, next) => next.name.localeCompare(prev.name, 'zh-CN', { numeric: true }))
+      buildingGroup.floorCount = buildingGroup.floors.length
+      return buildingGroup
+    })
+    .sort((prev, next) => prev.name.localeCompare(next.name, 'zh-CN', { numeric: true }))
+})
+const selectedBuilding = computed(() => (filters.building === 'all' ? '' : filters.building))
+const selectedFloor = computed(() => (filters.floor === 'all' ? '' : filters.floor))
+const selectedBuildingGroup = computed(() => buildingGroups.value.find((group) => group.name === selectedBuilding.value))
+const floorGroups = computed(() => selectedBuildingGroup.value?.floors ?? [])
+const selectedFloorGroup = computed(() => floorGroups.value.find((group) => group.name === selectedFloor.value))
+const currentFloorRooms = computed(() => selectedFloorGroup.value?.rooms ?? [])
+const hierarchyLevel = computed<'building' | 'floor' | 'room'>(() => {
+  if (!selectedBuilding.value) return 'building'
+  return selectedFloor.value ? 'room' : 'floor'
+})
+const hierarchyIsEmpty = computed(() => {
+  if (hierarchyLevel.value === 'building') return buildingGroups.value.length === 0
+  if (hierarchyLevel.value === 'floor') return floorGroups.value.length === 0
+  return currentFloorRooms.value.length === 0
+})
+const hierarchyEmptyDescription = computed(() => {
+  if (hierarchyLevel.value === 'building') return hasSearchOrFilters.value ? '没有匹配楼栋' : '暂无楼栋'
+  if (hierarchyLevel.value === 'floor') return '没有匹配楼层'
+  return '没有匹配房间'
+})
 
 function openRoom(room: AdminRoom) {
-  router.push(`/rooms/${room.id}`)
+  router.push({
+    name: 'room-detail',
+    params: { roomId: room.id },
+    query: {
+      from: 'rooms-admin',
+      keyword: filters.keyword || undefined,
+      building: selectedBuilding.value || room.building || undefined,
+      floor: selectedFloor.value || room.floor || undefined,
+      type: filters.type !== 'all' ? filters.type : undefined,
+      status: filters.status !== 'all' ? filters.status : undefined,
+      equipment: filters.equipment.length ? filters.equipment : undefined,
+    },
+  })
 }
 
 function resetFilters() {
@@ -107,6 +234,48 @@ function resetFilters() {
   filters.type = 'all'
   filters.equipment = []
   filters.status = 'all'
+}
+
+function hasFloorInBuilding(building: string, floor: string) {
+  if (floor === 'all') return true
+  return rooms.value.some((room) => (building === 'all' || room.building === building) && room.floor === floor)
+}
+
+function changeBuildingFilter(building: string, options: { preserveFloor?: boolean } = {}) {
+  filters.building = building
+  if (!options.preserveFloor || !hasFloorInBuilding(building, filters.floor)) {
+    filters.floor = 'all'
+  }
+}
+
+function changeFloorFilter(floor: string) {
+  filters.floor = floor
+}
+
+function selectBuilding(group: AdminBuildingGroup) {
+  changeBuildingFilter(group.name, { preserveFloor: true })
+}
+
+function selectFloor(group: AdminFloorGroup) {
+  changeFloorFilter(group.name)
+}
+
+function previewFloorImage(group: AdminFloorGroup) {
+  if (!group.imageUrl) return
+
+  showImagePreview({
+    images: [group.imageUrl],
+    closeable: true,
+    showIndex: false,
+  })
+}
+
+function backToBuildings() {
+  changeBuildingFilter('all')
+}
+
+function backToFloors() {
+  changeFloorFilter('all')
 }
 
 function toggleEquipmentFilter(equipment: string) {
@@ -122,6 +291,35 @@ watch(
   () => route.query.keyword,
   (keyword) => {
     if (typeof keyword === 'string') filters.keyword = keyword
+  },
+)
+
+watch(
+  () => [route.query.building, route.query.floor, route.query.type, route.query.status, route.query.equipment],
+  ([building, floor, type, status, equipment]) => {
+    filters.building = queryText(building, 'all')
+    filters.floor = queryText(floor, 'all')
+    filters.type = queryText(type, 'all')
+    filters.status = queryText(status, 'all')
+    filters.equipment = queryList(equipment)
+  },
+)
+
+watch(
+  () => optionData.value.buildings,
+  (buildings) => {
+    if (filters.building !== 'all' && !buildings.includes(filters.building)) {
+      changeBuildingFilter('all')
+    }
+  },
+)
+
+watch(
+  () => optionData.value.floors,
+  (floors) => {
+    if (filters.floor !== 'all' && !floors.includes(filters.floor)) {
+      changeFloorFilter('all')
+    }
   },
 )
 </script>
@@ -159,37 +357,100 @@ watch(
     </section>
 
     <section class="room-list">
-      <button
-        v-for="room in filteredRooms"
-        :key="room.id"
-        class="room-info-card"
-        type="button"
-        :aria-label="`查看${room.code}房间详情`"
-        @click="openRoom(room)"
-      >
-        <span class="room-main">
-          <span class="room-title-row">
-            <strong>{{ room.code }}</strong>
-            <em :class="{ disabled: room.status === '1' }">{{ room.status === '1' ? '已停用' : '启用中' }}</em>
+      <div v-if="hierarchyLevel !== 'building'" class="hierarchy-nav">
+        <button type="button" @click="hierarchyLevel === 'room' ? backToFloors() : backToBuildings()">
+          <ChevronLeft :size="18" />
+          <span>{{ hierarchyLevel === 'room' ? selectedFloor : selectedBuilding }}</span>
+        </button>
+        <p>{{ hierarchyLevel === 'room' ? `${selectedBuilding} / ${selectedFloor}` : '选择楼层' }}</p>
+      </div>
+
+      <template v-if="hierarchyLevel === 'building'">
+        <button
+          v-for="group in buildingGroups"
+          :key="group.name"
+          class="hierarchy-card"
+          type="button"
+          :aria-label="`查看${group.name}楼层`"
+          @click="selectBuilding(group)"
+        >
+          <span class="hierarchy-card__icon">
+            <Building2 :size="25" />
           </span>
-          <span class="room-sub">{{ room.name }} · {{ room.type }}</span>
-          <span class="room-meta">
-            <MapPin :size="15" />
-            {{ room.building }} · {{ room.floor }} · {{ room.location }}
+          <span class="hierarchy-card__content">
+            <strong>{{ group.name }}</strong>
+            <small>{{ group.floorCount }} 个楼层 · {{ group.roomCount }} 间房</small>
           </span>
-          <span class="room-meta">
-            <Users :size="15" />
-            {{ room.capacity }} 人
+          <ChevronRight :size="20" />
+        </button>
+      </template>
+
+      <template v-else-if="hierarchyLevel === 'floor'">
+        <article
+          v-for="group in floorGroups"
+          :key="group.name"
+          class="hierarchy-card hierarchy-card--floor"
+        >
+          <button
+            v-if="group.imageUrl"
+            class="hierarchy-card__icon hierarchy-card__image-button"
+            type="button"
+            :aria-label="`放大查看${selectedBuilding}${group.name}楼层图`"
+            @click="previewFloorImage(group)"
+          >
+            <img v-if="group.imageUrl" :src="group.imageUrl" :alt="`${selectedBuilding}${group.name}楼层图`" />
+          </button>
+          <span v-else class="hierarchy-card__icon">
+            <Layers3 :size="25" />
           </span>
-          <span class="equipment-row">
-            <small v-for="item in room.equipment" :key="item">{{ item }}</small>
+          <button
+            class="hierarchy-card__entry"
+            type="button"
+            :aria-label="`查看${selectedBuilding}${group.name}房间`"
+            @click="selectFloor(group)"
+          >
+            <span class="hierarchy-card__content">
+              <strong>{{ group.name }}</strong>
+              <small>{{ group.roomCount }} 间房</small>
+            </span>
+            <ChevronRight :size="20" />
+          </button>
+        </article>
+      </template>
+
+      <template v-else>
+        <button
+          v-for="room in currentFloorRooms"
+          :key="room.id"
+          class="room-info-card"
+          type="button"
+          :aria-label="`查看${room.code}房间详情`"
+          @click="openRoom(room)"
+        >
+          <span class="room-main">
+            <span class="room-title-row">
+              <strong>{{ room.code }}</strong>
+              <em :class="{ disabled: room.status === '1' }">{{ room.status === '1' ? '已停用' : '启用中' }}</em>
+            </span>
+            <span class="room-sub">{{ room.name }} · {{ room.type }}</span>
+            <span class="room-meta">
+              <MapPin :size="15" />
+              {{ room.building }} · {{ room.floor }} · {{ room.location }}
+            </span>
+            <span class="room-meta">
+              <Users :size="15" />
+              {{ room.capacity }} 人
+            </span>
+            <span class="equipment-row">
+              <small v-for="item in room.equipment" :key="item">{{ item }}</small>
+            </span>
           </span>
-        </span>
-        <ChevronRight :size="19" />
-      </button>
+          <ChevronRight :size="19" />
+        </button>
+      </template>
 
       <van-loading v-if="isLoading" type="spinner">加载房间中</van-loading>
-      <van-empty v-else-if="filteredRooms.length === 0" :description="hasSearchOrFilters ? '没有匹配房间' : '暂无房间'" />
+      <van-empty v-else-if="hierarchyIsEmpty" :description="hierarchyEmptyDescription" />
     </section>
   </main>
 
@@ -206,7 +467,7 @@ watch(
       <div v-if="optionData.buildings.length" class="filter-group">
         <h3>楼栋</h3>
         <div class="filter-options">
-          <button :class="{ active: filters.building === 'all' }" type="button" @click="filters.building = 'all'">
+          <button :class="{ active: filters.building === 'all' }" type="button" @click="changeBuildingFilter('all')">
             全部楼栋
           </button>
           <button
@@ -214,7 +475,7 @@ watch(
             :key="item"
             :class="{ active: filters.building === item }"
             type="button"
-            @click="filters.building = item"
+            @click="changeBuildingFilter(item)"
           >
             {{ item }}
           </button>
@@ -224,7 +485,7 @@ watch(
       <div v-if="optionData.floors.length" class="filter-group">
         <h3>楼层</h3>
         <div class="filter-options">
-          <button :class="{ active: filters.floor === 'all' }" type="button" @click="filters.floor = 'all'">
+          <button :class="{ active: filters.floor === 'all' }" type="button" @click="changeFloorFilter('all')">
             全部楼层
           </button>
           <button
@@ -232,7 +493,7 @@ watch(
             :key="item"
             :class="{ active: filters.floor === item }"
             type="button"
-            @click="filters.floor = item"
+            @click="changeFloorFilter(item)"
           >
             {{ item }}
           </button>
@@ -458,7 +719,143 @@ watch(
 
 .room-list {
   display: grid;
+  align-content: start;
   gap: 10px;
+}
+
+.hierarchy-nav {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 48px;
+  padding: 4px 0;
+  background: var(--space-bg);
+}
+
+.hierarchy-nav button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 12px 0 9px;
+  color: var(--space-blue);
+  background: #fff;
+  border: 1px solid rgba(22, 119, 255, 0.2);
+  border-radius: 12px;
+  font-size: 15px;
+  font-weight: 850;
+}
+
+.hierarchy-nav button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hierarchy-nav p {
+  margin: 0;
+  overflow: hidden;
+  color: var(--space-subtext);
+  font-size: 13px;
+  font-weight: 760;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hierarchy-card {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) 22px;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 88px;
+  padding: 14px 12px;
+  color: var(--space-text);
+  text-align: left;
+  background: #fff;
+  border: 1px solid rgba(232, 238, 247, 0.92);
+  border-radius: 8px;
+  box-shadow: 0 8px 22px rgba(54, 89, 150, 0.08);
+}
+
+.hierarchy-card__icon {
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  min-height: 64px;
+  overflow: hidden;
+  color: #0f7a57;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-radius: 8px;
+}
+
+.hierarchy-card--floor .hierarchy-card__icon {
+  color: var(--space-blue);
+  background: #edf5ff;
+  border-color: rgba(22, 119, 255, 0.22);
+}
+
+.hierarchy-card__image-button {
+  padding: 0;
+}
+
+.hierarchy-card__icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+}
+
+.hierarchy-card__entry {
+  grid-column: 2 / 4;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 22px;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 64px;
+  padding: 0;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+}
+
+.hierarchy-card__content {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+}
+
+.hierarchy-card__content strong {
+  overflow: hidden;
+  font-size: 19px;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hierarchy-card__content small {
+  overflow: hidden;
+  color: var(--space-subtext);
+  font-size: 13px;
+  font-weight: 760;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hierarchy-card > svg,
+.hierarchy-card__entry > svg {
+  color: var(--space-muted);
 }
 
 .room-info-card {

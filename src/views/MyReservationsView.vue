@@ -7,13 +7,16 @@ import { Bell, CalendarDays, Clock3, DoorOpen, Search } from '@lucide/vue'
 import StatusBadge from '@/components/StatusBadge.vue'
 import { cancelReservation, getReservation, listMyReservations, type BackendReservation } from '@/api/space'
 import { toUiReservation } from '@/services/spaceMapper'
+import { useSessionStore } from '@/stores/session'
 import type { ReservationStatus } from '@/types/space'
 
 const router = useRouter()
 const queryClient = useQueryClient()
+const session = useSessionStore()
 const activeStatus = ref<'all' | ReservationStatus>('all')
 const cancellingId = ref('')
 const keyword = ref('')
+const pageEyebrow = computed(() => `${session.roleLabel}工作台`)
 
 const statusTabs: Array<{ label: string; value: 'all' | ReservationStatus }> = [
   { label: '全部', value: 'all' },
@@ -22,6 +25,7 @@ const statusTabs: Array<{ label: string; value: 'all' | ReservationStatus }> = [
   { label: '已驳回', value: 'rejected' },
   { label: '已取消', value: 'cancelled' },
   { label: '已结束', value: 'finished' },
+  { label: '退回', value: 'returned' },
 ]
 
 function hasCompleteReservationSummary(reservation: BackendReservation) {
@@ -68,6 +72,7 @@ const statusCounts = computed(() => {
       cancelled: 0,
       finished: 0,
       partial: 0,
+      returned: 0,
     } as Record<'all' | ReservationStatus, number>,
   )
 })
@@ -114,7 +119,7 @@ async function cancelItem(reservationId: string) {
     <header class="mine-header">
       <div class="header-row">
         <div>
-          <p class="eyebrow">老师工作台</p>
+          <p class="eyebrow">{{ pageEyebrow }}</p>
           <h1 class="title">我的预约</h1>
           <p class="sub-title">{{ statusCounts.pending }} 条待审核 · {{ statusCounts.approved }} 条已通过</p>
         </div>
@@ -170,7 +175,7 @@ async function cancelItem(reservationId: string) {
         <p class="submitted-at">申请时间：{{ reservation.submittedAt || '-' }}</p>
 
         <div class="card-actions">
-          <button class="plain-button" type="button" @click="router.push(`/reservation/${reservation.id}`)">
+          <button class="plain-button" type="button" @click="router.push(`/reservation/${reservation.id}?from=mine`)">
             查看详情
           </button>
           <button

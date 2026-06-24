@@ -52,9 +52,23 @@ onMounted(() => {
   }
 })
 
+function createLocalDate(date: string) {
+  const [year = 0, month = 1, day = 1] = date.split('-').map(Number)
+  return new Date(year, month - 1, day)
+}
+
 function buildDraftSlots(currentDraft: LongReservationDraft | null) {
   const slots: Array<{ date: string; range: LongReservationTimeRange }> = []
   if (!currentDraft) return slots
+
+  if (currentDraft.resolvedSlots?.length) {
+    for (const slot of currentDraft.resolvedSlots) {
+      for (const range of slot.timeRanges) {
+        slots.push({ date: slot.date, range })
+      }
+    }
+    return slots
+  }
 
   if (currentDraft.mode === 'custom' && currentDraft.customSlots?.length) {
     for (const slot of currentDraft.customSlots) {
@@ -66,7 +80,12 @@ function buildDraftSlots(currentDraft: LongReservationDraft | null) {
   }
 
   for (const date of currentDraft.dates) {
-    for (const range of currentDraft.timeRanges) {
+    const weekday = String(createLocalDate(date).getDay())
+    const ranges =
+      currentDraft.mode === 'weekly'
+        ? currentDraft.weekdayTimeRanges?.[weekday] ?? currentDraft.timeRanges
+        : currentDraft.timeRanges
+    for (const range of ranges) {
       slots.push({ date, range })
     }
   }
@@ -79,7 +98,7 @@ function buildItems(currentDraft: LongReservationDraft) {
     items.push({
       roomId: Number(currentDraft.room.id),
       bookingDate: slot.date,
-      weekday: formatWeekdayValue(new Date(slot.date)),
+      weekday: formatWeekdayValue(createLocalDate(slot.date)),
       startTime: slot.range.startTime,
       endTime: slot.range.endTime,
     })

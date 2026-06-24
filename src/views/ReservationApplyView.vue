@@ -5,22 +5,51 @@ import { useRoute, useRouter } from 'vue-router'
 import { showToast } from 'vant'
 import { ArrowLeft, CalendarDays, ChevronDown } from '@lucide/vue'
 import { createReservation, listPublicRooms, listPublicTimePeriods } from '@/api/space'
-import { formatDateValue, formatWeekdayValue, sortBackendTimePeriods, toUiRoomBase, toUiTimePeriod } from '@/services/spaceMapper'
+import {
+  buildBookableTimePoints,
+  formatDateValue,
+  formatWeekdayValue,
+  isAlignedBookableRange,
+  sortBackendTimePeriods,
+  toUiRoomBase,
+  toUiTimePeriod,
+} from '@/services/spaceMapper'
 
 const route = useRoute()
 const router = useRouter()
 const queryClient = useQueryClient()
 const submitting = ref(false)
+const showRoomPicker = ref(false)
+const showStartTimePicker = ref(false)
+const showEndTimePicker = ref(false)
+
+function parseSlotQuery(value: unknown) {
+  const rawText = Array.isArray(value) ? String(value[0] ?? '') : String(value ?? '')
+  return rawText
+    .split(',')
+    .map((item) => {
+      const [startTime = '', endTime = ''] = item.split('-')
+      return {
+        startTime: startTime.slice(0, 5),
+        endTime: endTime.slice(0, 5),
+      }
+    })
+    .filter((item) => isAlignedBookableRange(item.startTime, item.endTime))
+}
 
 const form = reactive({
   roomId: String(route.query.roomId ?? ''),
   periodId: String(route.query.period ?? ''),
   date: String(route.query.date ?? formatDateValue(new Date())),
+  startTime: String(route.query.startTime ?? ''),
+  endTime: String(route.query.endTime ?? ''),
   title: '',
   purpose: '',
   people: 20,
   remark: '',
 })
+const timePoints = buildBookableTimePoints()
+const presetSlots = computed(() => parseSlotQuery(route.query.slots))
 
 const roomsQuery = useQuery({
   queryKey: ['h5-normal-apply-rooms'],
@@ -43,8 +72,44 @@ const periodsQuery = useQuery({
 const rooms = computed(() => roomsQuery.data.value ?? [])
 const timePeriods = computed(() => periodsQuery.data.value ?? [])
 const selectedRoom = computed(() => rooms.value.find((room) => room.id === form.roomId) ?? rooms.value[0])
-const selectedPeriod = computed(() => timePeriods.value.find((period) => period.id === form.periodId) ?? timePeriods.value[0])
-const canSubmit = computed(() => Boolean(selectedRoom.value && selectedPeriod.value && form.date && form.title && form.purpose))
+const selectedPeriod = computed(() => timePeriods.value.find((period) => period.id === form.periodId))
+const endTimeOptions = computed(() => timePoints.filter((point) => point > form.startTime))
+const roomPickerColumns = computed(() =>
+  rooms.value.map((room) => ({
+    text: `${room.code} · ${room.name}`,
+    value: room.id,
+  })),
+)
+const startTimePickerColumns = computed(() =>
+  timePoints.slice(0, -1).map((point) => ({
+    text: point,
+    value: point,
+  })),
+)
+const endTimePickerColumns = computed(() =>
+  endTimeOptions.value.map((point) => ({
+    text: point,
+    value: point,
+  })),
+)
+const selectedRoomText = computed(() => {
+  const room = selectedRoom.value
+  return room ? `${room.code} · ${room.name}` : '请选择房间'
+})
+const selectedTimeItems = computed(() => {
+  if (presetSlots.value.length) return presetSlots.value
+  if (!isAlignedBookableRange(form.startTime, form.endTime)) return []
+  return [
+    {
+      startTime: form.startTime,
+      endTime: form.endTime,
+    },
+  ]
+})
+const selectedTimeText = computed(() => selectedTimeItems.value.map((item) => `${item.startTime}-${item.endTime}`).join('、'))
+const canSubmit = computed(() =>
+  Boolean(selectedRoom.value && form.date && form.title && form.purpose && selectedTimeItems.value.length),
+)
 
 watch(
   rooms,
@@ -58,19 +123,77 @@ watch(
 
 watch(
   timePeriods,
-  (nextPeriods) => {
-    if (!form.periodId && nextPeriods[0]) {
-      form.periodId = nextPeriods[0].id
+  () => {
+    if (selectedPeriod.value && !route.query.startTime && !route.query.endTime) {
+      form.startTime = selectedPeriod.value.startTime?.slice(0, 5) || selectedPeriod.value.time.split('-')[0] || ''
+      form.endTime = selectedPeriod.value.endTime?.slice(0, 5) || selectedPeriod.value.time.split('-')[1] || ''
+      return
     }
+
+    ensureDefaultTimeRange()
   },
   { immediate: true },
 )
 
+watch(
+  () => form.startTime,
+  () => {
+    if (!endTimeOptions.value.includes(form.endTime)) {
+      form.endTime = endTimeOptions.value[0] ?? ''
+    }
+  },
+)
+
+function ensureDefaultTimeRange() {
+  if (!form.startTime || !timePoints.includes(form.startTime)) {
+    form.startTime = timePoints[0] ?? ''
+  }
+  if (!form.endTime || !endTimeOptions.value.includes(form.endTime)) {
+    form.endTime = endTimeOptions.value[0] ?? ''
+  }
+}
+
+function getPickerValue(option: unknown) {
+  if (option && typeof option === 'object' && 'selectedValues' in option) {
+    const values = (option as { selectedValues?: unknown[] }).selectedValues
+    return String(values?.[0] ?? '')
+  }
+
+  if (option && typeof option === 'object' && 'value' in option) {
+    return String((option as { value?: unknown }).value ?? '')
+  }
+
+  return String(option ?? '')
+}
+
+function confirmRoomPicker(option: unknown) {
+  const nextRoomId = getPickerValue(option)
+  if (nextRoomId) {
+    form.roomId = nextRoomId
+  }
+  showRoomPicker.value = false
+}
+
+function confirmStartTimePicker(option: unknown) {
+  const nextStartTime = getPickerValue(option)
+  if (nextStartTime) {
+    form.startTime = nextStartTime
+  }
+  showStartTimePicker.value = false
+}
+
+function confirmEndTimePicker(option: unknown) {
+  const nextEndTime = getPickerValue(option)
+  if (nextEndTime) {
+    form.endTime = nextEndTime
+  }
+  showEndTimePicker.value = false
+}
+
 async function submitReservation() {
   const room = selectedRoom.value
-  const period = selectedPeriod.value
 
-  if (!canSubmit.value || !room || !period) {
+  if (!canSubmit.value || !room) {
     showToast('请完整填写预约信息')
     return
   }
@@ -84,15 +207,13 @@ async function submitReservation() {
       purpose: form.purpose,
       peopleCount: form.people,
       detailRemark: form.remark,
-      items: [
-        {
+      items: selectedTimeItems.value.map((item) => ({
           roomId: Number(room.id),
           bookingDate: form.date,
           weekday: formatWeekdayValue(new Date(form.date)),
-          startTime: period.startTime || period.time.split('-')[0] || '',
-          endTime: period.endTime || period.time.split('-')[1] || '',
-        },
-      ],
+          startTime: item.startTime,
+          endTime: item.endTime,
+        })),
     })
 
     await queryClient.invalidateQueries({ queryKey: ['h5-my-reservations'] })
@@ -128,14 +249,12 @@ async function submitReservation() {
     </section>
 
     <section class="card stack">
-      <h2 class="section-title">预约时段</h2>
+      <h2 class="section-title">预约时间</h2>
       <label class="field-label">
         <span>房间</span>
-        <select v-model="form.roomId">
-          <option v-for="room in rooms" :key="room.id" :value="room.id">
-            {{ room.code }} · {{ room.name }}
-          </option>
-        </select>
+        <button class="picker-field" type="button" @click="showRoomPicker = true">
+          {{ selectedRoomText }}
+        </button>
         <ChevronDown :size="16" />
       </label>
 
@@ -145,15 +264,32 @@ async function submitReservation() {
         <CalendarDays :size="16" />
       </label>
 
-      <label class="field-label">
-        <span>时段</span>
-        <select v-model="form.periodId">
-          <option v-for="period in timePeriods" :key="period.id" :value="period.id">
-            {{ period.name }} {{ period.time }}
-          </option>
-        </select>
-        <ChevronDown :size="16" />
-      </label>
+      <div v-if="presetSlots.length" class="selected-slots" aria-label="已选择时段">
+        <span v-for="item in selectedTimeItems" :key="`${item.startTime}-${item.endTime}`">
+          {{ item.startTime }}-{{ item.endTime }}
+        </span>
+      </div>
+
+      <div v-else class="time-range-grid">
+        <label class="field-label">
+          <span>开始时间</span>
+          <button class="picker-field" type="button" @click="showStartTimePicker = true">
+            {{ form.startTime || '请选择' }}
+          </button>
+          <ChevronDown :size="16" />
+        </label>
+
+        <label class="field-label">
+          <span>结束时间</span>
+          <button class="picker-field" type="button" @click="showEndTimePicker = true">
+            {{ form.endTime || '请选择' }}
+          </button>
+          <ChevronDown :size="16" />
+        </label>
+      </div>
+      <p class="time-tip">
+        {{ presetSlots.length ? `已选择 ${selectedTimeItems.length} 个 30 分钟时段：${selectedTimeText}` : '可预约时间 08:30-22:30，按 30 分钟粒度选择。' }}
+      </p>
     </section>
 
     <section class="card stack">
@@ -182,6 +318,36 @@ async function submitReservation() {
       </van-button>
     </section>
   </main>
+
+  <van-popup v-model:show="showRoomPicker" position="bottom" round safe-area-inset-bottom>
+    <van-picker
+      title="选择房间"
+      :columns="roomPickerColumns"
+      :model-value="[form.roomId]"
+      @confirm="confirmRoomPicker"
+      @cancel="showRoomPicker = false"
+    />
+  </van-popup>
+
+  <van-popup v-model:show="showStartTimePicker" position="bottom" round safe-area-inset-bottom>
+    <van-picker
+      title="选择开始时间"
+      :columns="startTimePickerColumns"
+      :model-value="[form.startTime]"
+      @confirm="confirmStartTimePicker"
+      @cancel="showStartTimePicker = false"
+    />
+  </van-popup>
+
+  <van-popup v-model:show="showEndTimePicker" position="bottom" round safe-area-inset-bottom>
+    <van-picker
+      title="选择结束时间"
+      :columns="endTimePickerColumns"
+      :model-value="[form.endTime]"
+      @confirm="confirmEndTimePicker"
+      @cancel="showEndTimePicker = false"
+    />
+  </van-popup>
 </template>
 
 <style scoped>
@@ -252,7 +418,7 @@ async function submitReservation() {
 }
 
 .field-label input,
-.field-label select,
+.picker-field,
 .field-label textarea {
   width: 100%;
   min-height: 46px;
@@ -264,9 +430,11 @@ async function submitReservation() {
   outline: 0;
 }
 
-.field-label select {
-  appearance: none;
+.picker-field {
+  display: flex;
+  align-items: center;
   padding-right: 34px;
+  text-align: left;
 }
 
 .field-label svg {
@@ -282,6 +450,38 @@ async function submitReservation() {
   resize: none;
 }
 
+.time-range-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.selected-slots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.selected-slots span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 10px;
+  color: #0f65e8;
+  background: #eef6ff;
+  border: 1px solid rgba(22, 119, 255, 0.14);
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.time-tip {
+  margin: -2px 0 0;
+  color: var(--space-subtext);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .normal-submit {
   position: sticky;
   bottom: calc(var(--space-bottom-nav-height) + 10px);
@@ -290,5 +490,11 @@ async function submitReservation() {
   /* 提交按钮需要始终停在底部导航上方，避免窄屏滚动时被 Tabbar 遮挡。 */
   padding: 8px 0 12px;
   background: linear-gradient(180deg, rgba(245, 248, 254, 0), var(--space-bg) 32%);
+}
+
+@media (max-width: 360px) {
+  .time-range-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

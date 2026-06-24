@@ -1,5 +1,5 @@
 import axios, { AxiosError, type AxiosRequestConfig } from 'axios'
-import { clearSessionStorage, TOKEN_STORAGE_KEY } from '@/api/storage'
+import { clearSessionStorage, MUST_CHANGE_PASSWORD_STORAGE_KEY, TOKEN_STORAGE_KEY } from '@/api/storage'
 
 export interface AjaxResult<T = unknown> {
   code: number
@@ -52,6 +52,17 @@ function redirectToLoginWhenExpired() {
   }
 }
 
+// 后端返回 901 表示当前 token 有效，但账号必须先改初始或临时密码，不能清理 token。
+function redirectToPasswordWhenRequired() {
+  if (typeof window === 'undefined') return
+
+  localStorage.setItem(MUST_CHANGE_PASSWORD_STORAGE_KEY, '1')
+  const passwordPath = `${import.meta.env.BASE_URL}mine/password?force=1`
+  if (!window.location.pathname.endsWith('/mine/password')) {
+    window.location.assign(passwordPath)
+  }
+}
+
 function isBusinessResponse(data: unknown): data is AjaxResult | TableDataInfo<unknown> {
   return Boolean(data && typeof data === 'object' && 'code' in data)
 }
@@ -85,6 +96,10 @@ service.interceptors.response.use(
       redirectToLoginWhenExpired()
     }
 
+    if (code === 901) {
+      redirectToPasswordWhenRequired()
+    }
+
     throw new ApiError(String(body.msg || '请求处理失败'), {
       code,
       status: response.status,
@@ -97,6 +112,10 @@ service.interceptors.response.use(
 
     if (code === 401 || status === 401) {
       redirectToLoginWhenExpired()
+    }
+
+    if (code === 901) {
+      redirectToPasswordWhenRequired()
     }
 
     throw new ApiError(message, { code, status })

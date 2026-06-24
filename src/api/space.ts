@@ -18,12 +18,26 @@ export interface BackendSpaceRoom {
   assignedOrgName?: string
   equipmentDesc?: string
   roomEquipmentList?: unknown[]
+  imageUrl?: string
   locationDesc?: string
   bookable?: string
   status?: string
   delFlag?: string
   remark?: string
   [key: string]: unknown
+}
+
+export interface BackendSpaceFloor {
+  floorId?: number
+  buildingId?: number
+  buildingName?: string
+  floorNo?: string
+  floorName?: string
+  orderNum?: number
+  imageUrl?: string
+  status?: string
+  delFlag?: string
+  remark?: string
 }
 
 export interface BackendTimePeriod {
@@ -48,6 +62,8 @@ export interface BackendReservationItem {
   startTime?: string
   endTime?: string
   itemStatus?: string
+  auditStage?: string
+  effectiveAuditStage?: string
   reservationStatus?: string
   auditType?: string
   reservationNo?: string
@@ -55,11 +71,18 @@ export interface BackendReservationItem {
   title?: string
   peopleCount?: number
   applicantName?: string
+  applicantPhone?: string
   orgName?: string
   detailRemark?: string
   auditTime?: string
   auditorName?: string
   rejectReason?: string
+  teacherAuditorName?: string
+  teacherAuditTime?: string
+  teacherAuditOpinion?: string
+  propertyAuditorName?: string
+  propertyAuditTime?: string
+  propertyAuditOpinion?: string
 }
 
 export interface BackendReservation {
@@ -76,10 +99,17 @@ export interface BackendReservation {
   detailRemark?: string
   status?: string
   auditType?: string
+  auditStage?: string
   submitTime?: string
   auditorName?: string
   auditTime?: string
   rejectReason?: string
+  teacherAuditorName?: string
+  teacherAuditTime?: string
+  teacherAuditOpinion?: string
+  propertyAuditorName?: string
+  propertyAuditTime?: string
+  propertyAuditOpinion?: string
   roomId?: number
   roomCode?: string
   roomName?: string
@@ -133,6 +163,7 @@ export interface ReservationItemListParams extends PageParams {
 }
 
 export type RoomListParams = PageParams & Partial<BackendSpaceRoom>
+export type FloorListParams = PageParams & Partial<BackendSpaceFloor>
 
 const LARGE_PAGE = {
   pageNum: 1,
@@ -141,6 +172,15 @@ const LARGE_PAGE = {
 
 export function listRooms(params: RoomListParams = {}) {
   return http.get<TableDataInfo<BackendSpaceRoom>>('/space/room/list', {
+    params: {
+      ...LARGE_PAGE,
+      ...params,
+    },
+  })
+}
+
+export function listFloors(params: FloorListParams = {}) {
+  return http.get<TableDataInfo<BackendSpaceFloor>>('/space/floor/list', {
     params: {
       ...LARGE_PAGE,
       ...params,
@@ -270,6 +310,26 @@ export function approveReservation(reservationId: string | number, auditOpinion 
 
 export function rejectReservation(reservationId: string | number, auditOpinion = '审核驳回') {
   return http.put<AjaxResult>(`/space/reservation/${reservationId}/reject`, { auditOpinion })
+}
+
+export function returnReservation(reservationId: string | number, auditOpinion = '退回修改') {
+  return http.put<AjaxResult>(`/space/reservation/${reservationId}/return`, { auditOpinion })
+}
+
+export function rejectReservationItem(itemId: string | number, auditOpinion = '单场次驳回') {
+  return http.put<AjaxResult>(`/space/reservation/item/${itemId}/reject`, { auditOpinion })
+}
+
+export function returnReservationItem(itemId: string | number, auditOpinion = '单场次退回修改') {
+  return http.put<AjaxResult>(`/space/reservation/item/${itemId}/return`, { auditOpinion })
+}
+
+export function approveCancelReservation(reservationId: string | number, auditOpinion = '同意取消') {
+  return http.put<AjaxResult>(`/space/reservation/${reservationId}/cancel-audit/approve`, { auditOpinion })
+}
+
+export function rejectCancelReservation(reservationId: string | number, auditOpinion = '驳回取消') {
+  return http.put<AjaxResult>(`/space/reservation/${reservationId}/cancel-audit/reject`, { auditOpinion })
 }
 
 export function batchApproveReservations(reservationIds: Array<string | number>, auditOpinion = '批量审核通过') {

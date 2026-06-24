@@ -20,6 +20,7 @@ const reservationStatusText: Record<ReservationStatus, string> = {
   cancelled: '已取消',
   finished: '已结束',
   partial: '部分通过',
+  returned: '退回修改',
 }
 
 const label = computed(() =>

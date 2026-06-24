@@ -8,18 +8,22 @@ const router = useRouter()
 const session = useSessionStore()
 
 const tabs = computed(() => {
-  if (session.isStudent) {
-    return [
-      { path: '/home', label: '首页', icon: 'home-o' },
-      { path: '/mine', label: '我的', icon: 'manager-o' },
-    ]
-  }
-
-  if (session.isAdmin) {
+  if (session.isAdmin || session.isProperty) {
     return [
       { path: '/home', label: '首页', icon: 'home-o' },
       { path: '/audit', label: '审核', icon: 'todo-list-o' },
       { path: '/rooms-admin', label: '房间', icon: 'wap-home-o' },
+      { path: '/reservation/mine', label: '我的预约', icon: 'records-o' },
+      { path: '/mine', label: '我的', icon: 'manager-o' },
+    ]
+  }
+
+  if (session.isTeacher) {
+    return [
+      { path: '/home', label: '首页', icon: 'home-o' },
+      { path: '/audit', label: '审核', icon: 'todo-list-o' },
+      { path: '/reservation/long', label: '长期预约', icon: 'calendar-o' },
+      { path: '/reservation/mine', label: '我的预约', icon: 'records-o' },
       { path: '/mine', label: '我的', icon: 'manager-o' },
     ]
   }

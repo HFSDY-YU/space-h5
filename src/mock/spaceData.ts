@@ -3,6 +3,7 @@ import type { MessageItem, Reservation, Room, RoomStatus, TimePeriod, UserRole }
 export const roleLabels: Record<UserRole, string> = {
   student: '学生',
   teacher: '老师',
+  property: '物业',
   admin: '管理员',
 }
 
@@ -90,6 +91,7 @@ export const reservations: Reservation[] = [
     title: '跨学科课程研讨',
     applicant: '陈老师',
     applicantRole: '老师',
+    applicantPhone: '13800000001',
     roomId: 'room-101',
     roomName: '琴海研讨室',
     date: '2026-06-15',
@@ -116,6 +118,7 @@ export const reservations: Reservation[] = [
     title: '创新创业工作坊',
     applicant: '林老师',
     applicantRole: '老师',
+    applicantPhone: '13800000002',
     roomId: 'room-318',
     roomName: '创新活动室',
     date: '2026-06-15',
@@ -155,6 +158,7 @@ export const reservations: Reservation[] = [
     title: '智慧课堂公开课',
     applicant: '吴老师',
     applicantRole: '老师',
+    applicantPhone: '13800000003',
     roomId: 'room-502',
     roomName: '智慧教室',
     date: '2026-06-15',

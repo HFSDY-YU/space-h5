@@ -5,6 +5,9 @@ export const ROLE_STORAGE_KEY = 'space-h5-role'
 export const USER_STORAGE_KEY = 'space-h5-user'
 export const ROLES_STORAGE_KEY = 'space-h5-roles'
 export const PERMISSIONS_STORAGE_KEY = 'space-h5-permissions'
+export const MUST_CHANGE_PASSWORD_STORAGE_KEY = 'space-h5-must-change-password'
+export const PASSWORD_EXPIRED_STORAGE_KEY = 'space-h5-password-expired'
+export const PASSWORD_CHAR_TYPE_STORAGE_KEY = 'space-h5-password-char-type'
 
 export function readJsonStorage<T>(key: string, fallback: T): T {
   const rawValue = localStorage.getItem(key)
@@ -23,7 +26,7 @@ export function writeJsonStorage<T>(key: string, value: T) {
 
 export function readRoleStorage(fallback: UserRole = 'student') {
   const storedRole = localStorage.getItem(ROLE_STORAGE_KEY)
-  return storedRole === 'admin' || storedRole === 'teacher' || storedRole === 'student'
+  return storedRole === 'admin' || storedRole === 'property' || storedRole === 'teacher' || storedRole === 'student'
     ? storedRole
     : fallback
 }
@@ -34,4 +37,7 @@ export function clearSessionStorage() {
   localStorage.removeItem(USER_STORAGE_KEY)
   localStorage.removeItem(ROLES_STORAGE_KEY)
   localStorage.removeItem(PERMISSIONS_STORAGE_KEY)
+  localStorage.removeItem(MUST_CHANGE_PASSWORD_STORAGE_KEY)
+  localStorage.removeItem(PASSWORD_EXPIRED_STORAGE_KEY)
+  localStorage.removeItem(PASSWORD_CHAR_TYPE_STORAGE_KEY)
 }

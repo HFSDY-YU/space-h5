@@ -9,28 +9,34 @@ import {
   Clock3,
   DoorOpen,
   FileText,
+  MapPin,
+  Phone,
   UserRound,
   Users,
 } from '@lucide/vue'
 import {
   getPublicRoom,
   listPublicReservationItems,
+  listReservationItems,
   listPublicTimePeriods,
   type BackendReservationItem,
 } from '@/api/space'
 import {
   formatBackendTime,
   formatWeekday,
+  resolveSpaceAssetUrl,
   sortBackendTimePeriods,
   toItemReservationStatus,
   toRoomStatus,
   toUiRoomBase,
   toUiTimePeriod,
 } from '@/services/spaceMapper'
+import { useSessionStore } from '@/stores/session'
 import type { RoomStatus, TimePeriod } from '@/types/space'
 
 const route = useRoute()
 const router = useRouter()
+const session = useSessionStore()
 
 function firstQueryValue(value: unknown) {
   if (Array.isArray(value)) return String(value[0] ?? '')
@@ -64,6 +70,7 @@ function itemStatusText(item: BackendReservationItem) {
   if (status === 'rejected') return '已驳回'
   if (status === 'cancelled') return '已取消'
   if (status === 'finished') return '已结束'
+  if (status === 'returned') return '退回修改'
   return '部分通过'
 }
 
@@ -73,35 +80,104 @@ function statusClass(status: RoomStatus) {
   return 'free'
 }
 
+function normalizeText(value: unknown) {
+  return typeof value === 'string' ? value.trim() : value == null ? '' : String(value).trim()
+}
+
+function goBack() {
+  router.replace(getRoomDetailRoute())
+}
+
+function getRoomDetailRoute() {
+  return {
+    name: 'room-detail',
+    params: { roomId: roomId.value },
+    query: {
+      date: bookingDate.value,
+      period: periodId.value || undefined,
+      from: firstQueryValue(route.query.from) || undefined,
+      keyword: firstQueryValue(route.query.keyword) || undefined,
+      building: firstQueryValue(route.query.building) || undefined,
+      floor: firstQueryValue(route.query.floor) || undefined,
+      type: firstQueryValue(route.query.type) || undefined,
+      status: firstQueryValue(route.query.status) || undefined,
+      equipment: route.query.equipment || undefined,
+    },
+  }
+}
+
+async function loadReservationItems(params: {
+  roomId: number
+  bookingDate: string
+  periodStartTime?: string
+  periodEndTime?: string
+}) {
+  if (session.canViewReviewingSlots) {
+    try {
+      const result = await listReservationItems({
+        ...params,
+        occupiedOnly: true,
+      })
+      return result.rows
+    } catch {
+      // 高权限接口偶发失败时降级到公开接口，页面仍保留可用的占用信息。
+    }
+  }
+
+  const result = await listPublicReservationItems(params)
+  return result.rows
+}
+
 const roomId = computed(() => String(route.params.roomId))
 const bookingDate = computed(() => firstQueryValue(route.query.date) || new Date().toISOString().slice(0, 10))
 const periodId = computed(() => firstQueryValue(route.query.period))
+const queryStartTime = computed(() => firstQueryValue(route.query.startTime))
+const queryEndTime = computed(() => firstQueryValue(route.query.endTime))
+const queryItemId = computed(() => firstQueryValue(route.query.itemId))
 const dateText = computed(() => `${bookingDate.value} ${formatWeekday(parseDateValue(bookingDate.value))}`)
 
 const slotQuery = useQuery({
-  queryKey: computed(() => ['h5-room-slot-detail', roomId.value, bookingDate.value, periodId.value]),
+  queryKey: computed(() => [
+    'h5-room-slot-detail',
+    roomId.value,
+    bookingDate.value,
+    periodId.value,
+    queryStartTime.value,
+    queryEndTime.value,
+    queryItemId.value,
+  ]),
   queryFn: async () => {
     const [room, periodsResult] = await Promise.all([getPublicRoom(roomId.value), listPublicTimePeriods()])
     const periods = sortBackendTimePeriods(periodsResult.rows).map(toUiTimePeriod)
     const period = periods.find((item) => item.id === periodId.value) ?? periods[0]
+    const periodStartTime = queryStartTime.value || period?.startTime
+    const periodEndTime = queryEndTime.value || period?.endTime
 
-    const itemResult = await listPublicReservationItems({
+    const items = await loadReservationItems({
       roomId: Number(roomId.value),
       bookingDate: bookingDate.value,
-      periodStartTime: period?.startTime,
-      periodEndTime: period?.endTime,
+      periodStartTime,
+      periodEndTime,
     })
 
-    const items = period ? itemResult.rows.filter((item) => isOverlapping(item, period)) : itemResult.rows
+    const rangePeriod = {
+      id: periodId.value || `${queryStartTime.value}-${queryEndTime.value}`,
+      name: '当前时段',
+      time: `${formatBackendTime(periodStartTime)}-${formatBackendTime(periodEndTime)}`,
+      startTime: periodStartTime,
+      endTime: periodEndTime,
+    }
+    const matchedItems = items.filter((item) => isOverlapping(item, rangePeriod))
     const primaryItem =
-      items.find((item) => toRoomStatus(item.itemStatus) === 'reviewing') ??
-      items.find((item) => toRoomStatus(item.itemStatus) === 'occupied') ??
-      items[0]
+      matchedItems.find((item) => String(item.itemId ?? '') === queryItemId.value) ??
+      matchedItems.find((item) => toRoomStatus(item.itemStatus) === 'reviewing') ??
+      matchedItems.find((item) => toRoomStatus(item.itemStatus) === 'occupied') ??
+      matchedItems[0]
 
     return {
       room: room ? toUiRoomBase(room) : undefined,
-      period,
-      items,
+      period: rangePeriod,
+      items: matchedItems,
       primaryItem,
     }
   },
@@ -114,22 +190,25 @@ const items = computed(() => slotQuery.data.value?.items ?? [])
 const primaryItem = computed(() => slotQuery.data.value?.primaryItem)
 const currentStatus = computed<RoomStatus>(() => toRoomStatus(primaryItem.value?.itemStatus) ?? 'free')
 const periodText = computed(() => (period.value ? `${period.value.name} ${period.value.time}` : '当前时段'))
+const roomImageUrl = computed(() => resolveSpaceAssetUrl(room.value?.imageUrl))
+const applicantPhoneText = computed(() => normalizeText(primaryItem.value?.applicantPhone) || '-')
+const applicantOrgText = computed(() => normalizeText(primaryItem.value?.orgName) || '-')
+const contactSummaryText = computed(() => {
+  const parts = [applicantPhoneText.value !== '-' ? applicantPhoneText.value : '', applicantOrgText.value !== '-' ? applicantOrgText.value : '']
+  return parts.filter(Boolean).join(' · ') || '暂无联系方式'
+})
 const isLoading = computed(() => slotQuery.isLoading.value)
 const isError = computed(() => slotQuery.isError.value)
 
 function goRoomWeek() {
-  router.replace({
-    name: 'room-detail',
-    params: { roomId: roomId.value },
-    query: { date: bookingDate.value, period: periodId.value },
-  })
+  router.replace(getRoomDetailRoute())
 }
 </script>
 
 <template>
   <main class="safe-page slot-detail-page">
     <header class="slot-nav">
-      <button type="button" aria-label="返回" @click="router.back()">
+      <button type="button" aria-label="返回" @click="goBack">
         <ArrowLeft :size="20" />
       </button>
       <strong>时段占用</strong>
@@ -149,6 +228,13 @@ function goRoomWeek() {
 
     <section class="info-card">
       <h2>房间信息</h2>
+      <div class="room-image">
+        <img v-if="roomImageUrl" :src="roomImageUrl" :alt="`${room?.code || roomId}房间图片`" />
+        <span v-else>
+          <DoorOpen :size="28" />
+          预留房间图片
+        </span>
+      </div>
       <div class="info-grid">
         <span>
           <DoorOpen :size="16" />
@@ -190,6 +276,18 @@ function goRoomWeek() {
             <dd>{{ primaryItem.applicantName || '-' }}</dd>
           </div>
           <div>
+            <dt><Phone :size="15" />联系方式</dt>
+            <dd>{{ applicantPhoneText }}</dd>
+          </div>
+          <div>
+            <dt><MapPin :size="15" />联系地址</dt>
+            <dd>{{ applicantOrgText }}</dd>
+          </div>
+          <div>
+            <dt><Users :size="15" />申请单位</dt>
+            <dd>{{ applicantOrgText }}</dd>
+          </div>
+          <div>
             <dt><Users :size="15" />人数</dt>
             <dd>{{ primaryItem.peopleCount ?? '-' }}</dd>
           </div>
@@ -205,6 +303,11 @@ function goRoomWeek() {
             <dd>{{ primaryItem.detailRemark || primaryItem.orgName || '暂无' }}</dd>
           </div>
         </dl>
+        <a v-if="applicantPhoneText !== '-'" class="contact-call" :href="`tel:${applicantPhoneText}`">
+          <Phone :size="17" />
+          联系预约人
+          <span>{{ contactSummaryText }}</span>
+        </a>
       </div>
 
       <van-empty v-else-if="!isLoading && !isError" description="当前时段暂无占用信息" />
@@ -312,6 +415,61 @@ function goRoomWeek() {
   margin: 0;
   color: var(--space-text);
   font-size: 17px;
+}
+
+.room-image {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  color: var(--space-blue);
+  background: #f3f8ff;
+  border: 1px dashed rgba(22, 119, 255, 0.28);
+  border-radius: 14px;
+}
+
+.contact-call {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 88px) minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 48px;
+  padding: 0 12px;
+  color: #fff;
+  text-decoration: none;
+  background: var(--space-blue);
+  border-radius: 14px;
+  font-size: 14px;
+  font-weight: 850;
+}
+
+.contact-call svg {
+  flex: 0 0 auto;
+}
+
+.contact-call span {
+  overflow: hidden;
+  color: rgba(255, 255, 255, 0.84);
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.room-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.room-image span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #5c7196;
+  font-size: 14px;
+  font-weight: 800;
 }
 
 .section-head {

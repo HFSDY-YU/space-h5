@@ -48,6 +48,7 @@ export interface UserInfoResponse extends AjaxResult {
   user?: BackendUser
   roles?: string[]
   permissions?: string[]
+  pwdChrtype?: string | number
   isDefaultModifyPwd?: boolean
   isPasswordExpired?: boolean
 }

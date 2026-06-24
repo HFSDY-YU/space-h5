@@ -41,31 +41,31 @@ const router = createRouter({
           path: 'reservation/apply',
           name: 'reservation-apply',
           component: () => import('@/views/ReservationApplyView.vue'),
-          meta: { roles: ['teacher'] },
+          meta: { requiresReserve: true },
         },
         {
           path: 'reservation/long',
           name: 'reservation-long',
           component: () => import('@/views/LongReservationApplyView.vue'),
-          meta: { roles: ['teacher'] },
+          meta: { requiresReserve: true },
         },
         {
           path: 'reservation/long/rooms',
           name: 'reservation-long-rooms',
           component: () => import('@/views/LongReservationRoomsView.vue'),
-          meta: { roles: ['teacher'] },
+          meta: { requiresReserve: true },
         },
         {
           path: 'reservation/long/confirm',
           name: 'reservation-long-confirm',
           component: () => import('@/views/LongReservationConfirmView.vue'),
-          meta: { roles: ['teacher'] },
+          meta: { requiresReserve: true },
         },
         {
           path: 'reservation/mine',
           name: 'reservation-mine',
           component: () => import('@/views/MyReservationsView.vue'),
-          meta: { roles: ['teacher'] },
+          meta: { requiresMyReservations: true },
         },
         {
           path: 'reservation/:reservationId',
@@ -76,13 +76,13 @@ const router = createRouter({
           path: 'audit',
           name: 'audit',
           component: () => import('@/views/AuditView.vue'),
-          meta: { roles: ['admin'] },
+          meta: { requiresAudit: true },
         },
         {
           path: 'rooms-admin',
           name: 'rooms-admin',
           component: () => import('@/views/RoomsAdminView.vue'),
-          meta: { roles: ['admin'] },
+          meta: { requiresRoomManage: true },
         },
         {
           path: 'messages',
@@ -128,9 +128,23 @@ router.beforeEach((to) => {
   const session = useSessionStore()
   if (to.meta.public) return true
   if (!session.isLoggedIn) return { name: 'login' }
+  if (session.mustChangePassword && to.name !== 'mine-password') {
+    return { name: 'mine-password', query: { force: '1' }, replace: true }
+  }
 
-  const allowedRoles = to.meta.roles as string[] | undefined
-  if (allowedRoles && !allowedRoles.includes(session.role)) {
+  if (to.meta.requiresReserve && !session.canReserve) {
+    return { name: 'home' }
+  }
+
+  if (to.meta.requiresMyReservations && !session.canViewMyReservations) {
+    return { name: 'home' }
+  }
+
+  if (to.meta.requiresAudit && !session.canAudit) {
+    return { name: 'home' }
+  }
+
+  if (to.meta.requiresRoomManage && !session.canManageRooms) {
     return { name: 'home' }
   }
 
