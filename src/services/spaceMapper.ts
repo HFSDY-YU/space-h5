@@ -77,6 +77,22 @@ export function buildBookableTimeSlots() {
   }))
 }
 
+// 时间轴边界（分钟），两个时间轴视图共用，避免各自重复 timeToMinutes(BOOKABLE_*_TIME)。
+export const BOOKABLE_START_MINUTE = timeToMinutes(BOOKABLE_START_TIME)
+export const BOOKABLE_END_MINUTE = timeToMinutes(BOOKABLE_END_TIME)
+export const BOOKABLE_TOTAL_MINUTES = BOOKABLE_END_MINUTE - BOOKABLE_START_MINUTE
+
+// 将分钟数向上取整到下一个 30 分钟格点，用于把“当前时间”对齐到可预约段边界。
+export function roundUpToBookableSlot(minutes: number) {
+  return Math.ceil(minutes / BOOKABLE_SLOT_MINUTES) * BOOKABLE_SLOT_MINUTES
+}
+
+// 当前时刻在当天的分钟偏移（0-1439）。
+export function currentDayMinute() {
+  const now = new Date()
+  return now.getHours() * 60 + now.getMinutes()
+}
+
 export function isAlignedBookableRange(startTime?: string, endTime?: string) {
   const points = buildBookableTimePoints()
   const normalizedStart = formatBackendTime(startTime)

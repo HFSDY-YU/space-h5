@@ -4,11 +4,15 @@ import { useRouter } from 'vue-router'
 import { showToast } from 'vant'
 import { ArrowLeft, CalendarDays, XCircle } from '@lucide/vue'
 import {
+  BOOKABLE_END_MINUTE,
   BOOKABLE_SLOT_MINUTES,
+  BOOKABLE_START_MINUTE,
   addDays,
   buildBookableTimeSlots,
+  currentDayMinute,
   formatDateValue,
   isAlignedBookableRange,
+  roundUpToBookableSlot,
   timeToMinutes,
 } from '@/services/spaceMapper'
 import {
@@ -42,8 +46,8 @@ const modeOptions: Array<{ value: LongReservationMode; label: string; tip: strin
 const timeSlots = buildBookableTimeSlots().map((slot) =>
   createTimeRange(slot.startTime, slot.endTime || slot.time.split('-')[1] || slot.startTime),
 )
-const timelineStartMinute = timeToMinutes('08:30')
-const timelineEndMinute = timeToMinutes('22:30')
+const timelineStartMinute = BOOKABLE_START_MINUTE
+const timelineEndMinute = BOOKABLE_END_MINUTE
 const timelineMiddleText = '15:30'
 const defaultTimeRange = createTimeRange('08:30', '09:00')
 const agendaSlotHeight = 64
@@ -177,10 +181,7 @@ function buildPickedDates() {
 }
 
 function getTodayMinBookableMinute() {
-  const now = new Date()
-  const currentMinutes = now.getHours() * 60 + now.getMinutes()
-  const alignedMinutes = Math.ceil(currentMinutes / BOOKABLE_SLOT_MINUTES) * BOOKABLE_SLOT_MINUTES
-  return Math.max(timelineStartMinute, alignedMinutes)
+  return Math.max(timelineStartMinute, roundUpToBookableSlot(currentDayMinute()))
 }
 
 function isFutureRuleRange(date: string, range: LongReservationTimeRange) {

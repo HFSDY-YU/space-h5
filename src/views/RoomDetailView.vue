@@ -16,15 +16,20 @@ import {
 } from '@/api/space'
 import {
   addDays,
+  BOOKABLE_END_MINUTE,
   BOOKABLE_END_TIME,
   BOOKABLE_SLOT_MINUTES,
+  BOOKABLE_START_MINUTE,
   BOOKABLE_START_TIME,
+  BOOKABLE_TOTAL_MINUTES,
   buildBookableTimeSlots,
+  currentDayMinute,
   formatBackendTime,
   formatDateValue,
   formatWeekday,
   minutesToTime,
   resolveSpaceAssetUrl,
+  roundUpToBookableSlot,
   sortBackendTimePeriods,
   timeToMinutes,
   toRoomStatus,
@@ -224,9 +229,9 @@ const weekEnd = computed(() => addDays(weekStart.value, 6))
 const weekStartValue = computed(() => formatDateValue(weekStart.value))
 const weekRangeText = computed(() => `${formatDateValue(weekStart.value)} 至 ${formatDateValue(weekEnd.value)}`)
 const todayValue = formatDateValue(new Date())
-const timelineStartMinute = timeToMinutes(BOOKABLE_START_TIME)
-const timelineEndMinute = timeToMinutes(BOOKABLE_END_TIME)
-const timelineTotalMinutes = timelineEndMinute - timelineStartMinute
+const timelineStartMinute = BOOKABLE_START_MINUTE
+const timelineEndMinute = BOOKABLE_END_MINUTE
+const timelineTotalMinutes = BOOKABLE_TOTAL_MINUTES
 const timelineMiddleText = minutesToTime(timelineStartMinute + timelineTotalMinutes / 2)
 // 展开后的详情区采用纵向日程轴：刻度、占用块、选择块共用同一套比例，避免视觉位置和真实时间错位。
 const DETAIL_PIXELS_PER_MINUTE = 1.6
@@ -249,9 +254,7 @@ const weekDays = computed(() =>
 )
 
 function getRoundedNowMinute() {
-  const now = new Date()
-  const nowMinutes = now.getHours() * 60 + now.getMinutes()
-  return Math.ceil(nowMinutes / BOOKABLE_SLOT_MINUTES) * BOOKABLE_SLOT_MINUTES
+  return roundUpToBookableSlot(currentDayMinute())
 }
 
 function getExpiredCutoffMinute(dateValue: string) {
