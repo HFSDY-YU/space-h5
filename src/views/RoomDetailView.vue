@@ -37,6 +37,7 @@ import {
   toUiTimePeriod,
 } from '@/services/spaceMapper'
 import { useSessionStore } from '@/stores/session'
+import RoomStatusPanel from '@/components/RoomStatusPanel.vue'
 import type { Room, RoomStatus, TimePeriod } from '@/types/space'
 
 type WeekCellStatus = RoomStatus | 'expired'
@@ -1098,50 +1099,18 @@ async function changeRoomStatus(status: '0' | '1') {
     </section>
   </main>
 
-  <van-popup v-model:show="showRoomStatusPanel" position="bottom" round safe-area-inset-bottom>
-    <section class="room-status-panel" aria-label="启用停用管理弹窗">
-      <header class="panel-head">
-        <div>
-          <strong>启用 / 停用管理</strong>
-          <span>{{ room.code }} · {{ room.type }}</span>
-        </div>
-        <button type="button" @click="showRoomStatusPanel = false">关闭</button>
-      </header>
-
-      <van-loading v-if="adminRoomLoading" class="panel-loading">加载房间状态</van-loading>
-      <template v-else>
-        <div class="status-summary">
-          <span>当前状态</span>
-          <strong :class="{ 'is-disabled': adminRoomStatus === '1' }">{{ roomStatusText }}</strong>
-        </div>
-        <p class="status-note">停用后该房间不可继续发起预约；如存在未结束或待审核预约，后端会自动阻止停用。</p>
-
-        <div class="status-actions">
-          <van-button
-            block
-            round
-            type="primary"
-            :disabled="!roomStatusCanEnable"
-            :loading="roomStatusSubmitting === '0'"
-            @click="changeRoomStatus('0')"
-          >
-            启用房间
-          </van-button>
-          <van-button
-            block
-            round
-            plain
-            type="danger"
-            :disabled="!roomStatusCanDisable"
-            :loading="roomStatusSubmitting === '1'"
-            @click="changeRoomStatus('1')"
-          >
-            停用房间
-          </van-button>
-        </div>
-      </template>
-    </section>
-  </van-popup>
+  <RoomStatusPanel
+    v-model:show="showRoomStatusPanel"
+    :room-code="room.code"
+    :room-type="room.type"
+    :loading="adminRoomLoading"
+    :status-text="roomStatusText"
+    :is-disabled="adminRoomStatus === '1'"
+    :can-enable="roomStatusCanEnable"
+    :can-disable="roomStatusCanDisable"
+    :submitting="roomStatusSubmitting"
+    @change-status="changeRoomStatus"
+  />
 </template>
 
 <style scoped>
@@ -1871,95 +1840,6 @@ async function changeRoomStatus(status: '0' | '1') {
 .selected-status--expired {
   color: #6b768c;
   background: #eef2f7;
-}
-
-.room-status-panel {
-  display: grid;
-  gap: 16px;
-  padding: 20px 16px calc(env(safe-area-inset-bottom) + 18px);
-  background: #fff;
-}
-
-.panel-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.panel-head div {
-  display: grid;
-  min-width: 0;
-  gap: 4px;
-}
-
-.panel-head strong {
-  color: var(--space-text);
-  font-size: 18px;
-  line-height: 1.25;
-}
-
-.panel-head span {
-  overflow: hidden;
-  color: var(--space-subtext);
-  font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.panel-head button {
-  flex: 0 0 auto;
-  min-width: 54px;
-  min-height: 36px;
-  color: var(--space-subtext);
-  background: #f3f6fb;
-  border: 0;
-  border-radius: 999px;
-  font-size: 13px;
-  font-weight: 800;
-}
-
-.panel-loading {
-  min-height: 126px;
-  padding: 28px 0;
-}
-
-.status-summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  min-height: 58px;
-  padding: 0 14px;
-  background: #f8fbff;
-  border: 1px solid var(--space-line);
-  border-radius: 16px;
-}
-
-.status-summary span {
-  color: var(--space-subtext);
-  font-size: 14px;
-}
-
-.status-summary strong {
-  color: #078047;
-  font-size: 16px;
-}
-
-.status-summary strong.is-disabled {
-  color: var(--space-red);
-}
-
-.status-note {
-  margin: 0;
-  color: var(--space-subtext);
-  font-size: 13px;
-  line-height: 1.55;
-}
-
-.status-actions {
-  display: grid;
-  gap: 10px;
 }
 
 @media (max-width: 360px) {
