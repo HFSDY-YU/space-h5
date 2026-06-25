@@ -2,7 +2,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { useRoute, useRouter } from 'vue-router'
-import { showConfirmDialog, showToast } from 'vant'
+import { showToast } from 'vant'
 import { ArrowLeft, CalendarDays, ChevronDown } from '@lucide/vue'
 import { createReservation, listPublicRooms, listPublicTimePeriods } from '@/api/space'
 import {
@@ -10,11 +10,11 @@ import {
   formatDateValue,
   formatWeekdayValue,
   isAlignedBookableRange,
-  isCapacityOverflow,
   sortBackendTimePeriods,
   toUiRoomBase,
   toUiTimePeriod,
 } from '@/services/spaceMapper'
+import { resolveCapacityOverride } from '@/services/capacityConfirm'
 
 const route = useRoute()
 const router = useRouter()
@@ -199,18 +199,9 @@ async function submitReservation() {
     return
   }
 
-  let capacityOverrideConfirmed = false
-  if (isCapacityOverflow(form.people, room.capacityMax)) {
-    try {
-      await showConfirmDialog({
-        title: '人数超过房间容量',
-        message: `预约人数 ${form.people} 人超过 ${room.code} ${room.name} 最大容量 ${room.capacityMax} 人，是否仍然提交？`,
-        confirmButtonText: '仍然提交',
-      })
-      capacityOverrideConfirmed = true
-    } catch {
-      return
-    }
+  const capacityOverrideConfirmed = await resolveCapacityOverride(form.people, room)
+  if (capacityOverrideConfirmed === null) {
+    return
   }
 
   submitting.value = true
