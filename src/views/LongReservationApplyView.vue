@@ -5,7 +5,6 @@ import { showToast } from 'vant'
 import { ArrowLeft, CalendarDays, XCircle } from '@lucide/vue'
 import {
   BOOKABLE_END_MINUTE,
-  BOOKABLE_SLOT_MINUTES,
   BOOKABLE_START_MINUTE,
   addDays,
   buildBookableTimeSlots,
@@ -15,6 +14,7 @@ import {
   roundUpToBookableSlot,
   timeToMinutes,
 } from '@/services/spaceMapper'
+import AgendaSelectBoard from '@/components/AgendaSelectBoard.vue'
 import {
   LONG_RESERVATION_MODE_LABELS,
   LONG_RESERVATION_RULE_TYPES,
@@ -50,8 +50,6 @@ const timelineStartMinute = BOOKABLE_START_MINUTE
 const timelineEndMinute = BOOKABLE_END_MINUTE
 const timelineMiddleText = '15:30'
 const defaultTimeRange = createTimeRange('08:30', '09:00')
-const agendaSlotHeight = 64
-const agendaSlotGap = 8
 
 const form = reactive({
   mode: 'weekly' as LongReservationMode,
@@ -299,10 +297,6 @@ function setWeekdayRanges(weekday: string, ranges: LongReservationTimeRange[]) {
   form.weekdayTimeRanges[weekday] = normalizeRanges(ranges).map((range) => ({ ...range, name: weekdayLabel(weekday) }))
 }
 
-function isSlotInRanges(slot: LongReservationTimeRange, ranges: LongReservationTimeRange[]) {
-  return ranges.some((range) => slot.startTime >= range.startTime && slot.endTime <= range.endTime)
-}
-
 function getRangeTimelineStyle(range: LongReservationTimeRange) {
   const startMinute = Math.max(timeToMinutes(range.startTime), timelineStartMinute)
   const endMinute = Math.min(timeToMinutes(range.endTime), timelineEndMinute)
@@ -313,20 +307,6 @@ function getRangeTimelineStyle(range: LongReservationTimeRange) {
   return {
     left: `${Math.max(0, left)}%`,
     width: `${Math.max(3, width)}%`,
-  }
-}
-
-function getAgendaRangeStyle(range: LongReservationTimeRange) {
-  const startIndex = timeSlots.findIndex((slot) => slot.startTime === range.startTime)
-  const normalizedStartIndex = Math.max(0, startIndex)
-  const durationMinutes = Math.max(BOOKABLE_SLOT_MINUTES, timeToMinutes(range.endTime) - timeToMinutes(range.startTime))
-  const slotCount = Math.max(1, Math.round(durationMinutes / BOOKABLE_SLOT_MINUTES))
-  const top = normalizedStartIndex * (agendaSlotHeight + agendaSlotGap)
-  const height = slotCount * agendaSlotHeight + Math.max(0, slotCount - 1) * agendaSlotGap
-
-  return {
-    top: `${top}px`,
-    height: `${height}px`,
   }
 }
 
@@ -655,34 +635,14 @@ function goPickRoom() {
 
           <Transition name="timeline-edit">
             <div v-if="activeWeekday === day.value" class="timeline-edit-panel">
-              <div class="agenda-select-board" role="group" :aria-label="`${day.label}半小时预约时间选择`">
-                <div class="agenda-time-column" aria-hidden="true">
-                  <span v-for="slot in timeSlots" :key="`${day.value}-${slot.id}-time`">{{ slot.startTime }}</span>
-                </div>
-                <div class="agenda-slot-column">
-                  <button
-                    v-for="slot in timeSlots"
-                    :key="`${day.value}-${slot.id}`"
-                    type="button"
-                    class="agenda-select-slot"
-                    :class="{ active: isSlotInRanges(slot, day.ranges) }"
-                    :aria-label="`${slot.startTime}-${slot.endTime}${isSlotInRanges(slot, day.ranges) ? '已选择，点击取消' : '可选择，点击添加'}`"
-                    :aria-pressed="isSlotInRanges(slot, day.ranges)"
-                    @click="toggleWeekdayTimeSlot(day.value, slot)"
-                  ></button>
-                  <button
-                    v-for="range in day.ranges"
-                    :key="`range-${day.value}-${range.id}`"
-                    type="button"
-                    class="agenda-selected-range"
-                    :style="getAgendaRangeStyle(range)"
-                    :aria-label="`${range.startTime}-${range.endTime} 已选择，点击取消`"
-                    @click="removeWeekdayTimeRange(day.value, range)"
-                  >
-                    <strong>{{ range.startTime }}-{{ range.endTime }}</strong>
-                  </button>
-                </div>
-              </div>
+              <AgendaSelectBoard
+                :time-slots="timeSlots"
+                :ranges="day.ranges"
+                :label="`${day.label}半小时预约时间选择`"
+                :key-prefix="`weekday-${day.value}`"
+                @toggle-slot="(slot) => toggleWeekdayTimeSlot(day.value, slot)"
+                @remove-range="(range) => removeWeekdayTimeRange(day.value, range)"
+              />
             </div>
           </Transition>
         </article>
@@ -738,34 +698,14 @@ function goPickRoom() {
               </div>
             </div>
 
-            <div class="agenda-select-board" role="group" aria-label="每日半小时预约时间选择">
-              <div class="agenda-time-column" aria-hidden="true">
-                <span v-for="slot in timeSlots" :key="`daily-${slot.id}-time`">{{ slot.startTime }}</span>
-              </div>
-              <div class="agenda-slot-column">
-                <button
-                  v-for="slot in timeSlots"
-                  :key="`daily-${slot.id}`"
-                  type="button"
-                  class="agenda-select-slot"
-                  :class="{ active: isSlotInRanges(slot, normalizedDailyRanges) }"
-                  :aria-label="`${slot.startTime}-${slot.endTime}${isSlotInRanges(slot, normalizedDailyRanges) ? '已选择，点击取消' : '可选择，点击添加'}`"
-                  :aria-pressed="isSlotInRanges(slot, normalizedDailyRanges)"
-                  @click="toggleDailyTimeSlot(slot)"
-                ></button>
-                <button
-                  v-for="range in normalizedDailyRanges"
-                  :key="`daily-range-${range.id}`"
-                  type="button"
-                  class="agenda-selected-range"
-                  :style="getAgendaRangeStyle(range)"
-                  :aria-label="`${range.startTime}-${range.endTime} 已选择，点击取消`"
-                  @click="removeDailyTimeRange(range)"
-                >
-                  <strong>{{ range.startTime }}-{{ range.endTime }}</strong>
-                </button>
-              </div>
-            </div>
+            <AgendaSelectBoard
+              :time-slots="timeSlots"
+              :ranges="normalizedDailyRanges"
+              label="每日半小时预约时间选择"
+              key-prefix="daily"
+              @toggle-slot="toggleDailyTimeSlot"
+              @remove-range="removeDailyTimeRange"
+            />
           </div>
         </article>
       </div>
@@ -856,34 +796,14 @@ function goPickRoom() {
               <p>点击时段添加，再次点击取消</p>
             </div>
           </div>
-          <div class="agenda-select-board" role="group" aria-label="自定义半小时预约时间选择">
-            <div class="agenda-time-column" aria-hidden="true">
-              <span v-for="slot in timeSlots" :key="`custom-${slot.id}-time`">{{ slot.startTime }}</span>
-            </div>
-            <div class="agenda-slot-column">
-              <button
-                v-for="slot in timeSlots"
-                :key="`custom-${slot.id}`"
-                type="button"
-                class="agenda-select-slot"
-                :class="{ active: isSlotInRanges(slot, customPicker.selectedRanges) }"
-                :aria-label="`${slot.startTime}-${slot.endTime}${isSlotInRanges(slot, customPicker.selectedRanges) ? '已选择，点击取消' : '可选择，点击添加'}`"
-                :aria-pressed="isSlotInRanges(slot, customPicker.selectedRanges)"
-                @click="toggleCustomTimeSlot(slot)"
-              ></button>
-              <button
-                v-for="range in customPicker.selectedRanges"
-                :key="`custom-range-${range.id}`"
-                type="button"
-                class="agenda-selected-range"
-                :style="getAgendaRangeStyle(range)"
-                :aria-label="`${range.startTime}-${range.endTime} 已选择，点击取消`"
-                @click="removeCustomTimeRange(range)"
-              >
-                <strong>{{ range.startTime }}-{{ range.endTime }}</strong>
-              </button>
-            </div>
-          </div>
+          <AgendaSelectBoard
+            :time-slots="timeSlots"
+            :ranges="customPicker.selectedRanges"
+            label="自定义半小时预约时间选择"
+            key-prefix="custom"
+            @toggle-slot="toggleCustomTimeSlot"
+            @remove-range="removeCustomTimeRange"
+          />
           <van-button block round type="primary" @click="confirmCustomSlot">确认添加</van-button>
         </div>
       </section>
@@ -1250,134 +1170,6 @@ function goPickRoom() {
 
 .section-title {
   margin: 0;
-}
-
-.agenda-select-board {
-  display: grid;
-  grid-template-columns: 48px minmax(0, 1fr);
-  gap: 10px;
-  align-items: start;
-  padding-top: 2px;
-}
-
-.agenda-time-column,
-.agenda-slot-column {
-  display: grid;
-  gap: 8px;
-}
-
-.agenda-time-column span {
-  display: flex;
-  align-items: flex-start;
-  justify-content: flex-end;
-  min-height: 64px;
-  padding-top: 2px;
-  color: #8490a5;
-  font-size: 13px;
-  font-weight: 850;
-  line-height: 1.2;
-}
-
-.agenda-slot-column {
-  position: relative;
-  padding-left: 10px;
-}
-
-.agenda-slot-column::before {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: 1px;
-  content: '';
-  background: #d8e2ef;
-}
-
-.agenda-select-slot {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  min-height: 64px;
-  padding: 0 16px;
-  color: transparent;
-  text-align: left;
-  background: linear-gradient(180deg, #f6fbff 0%, #edf6ff 100%);
-  border: 1px solid #d8e9fb;
-  border-radius: 12px;
-  box-shadow: none;
-  transition:
-    background 0.16s ease,
-    border-color 0.16s ease,
-    box-shadow 0.16s ease,
-    transform 0.16s ease;
-}
-
-.agenda-select-slot::before {
-  position: absolute;
-  top: 50%;
-  left: -14px;
-  width: 8px;
-  height: 8px;
-  content: '';
-  background: #d8e2ef;
-  border: 2px solid #fff;
-  border-radius: 999px;
-  transform: translateY(-50%);
-}
-
-.agenda-select-slot.active {
-  background: #f0f7ff;
-  border-color: #b9d8ff;
-}
-
-.agenda-select-slot.active::before {
-  background: var(--space-blue);
-}
-
-.agenda-select-slot:active {
-  transform: scale(0.992);
-}
-
-.agenda-select-slot:focus-visible {
-  outline: 3px solid rgba(22, 119, 255, 0.22);
-  outline-offset: 2px;
-}
-
-.agenda-selected-range {
-  position: absolute;
-  right: 0;
-  left: 10px;
-  z-index: 3;
-  display: flex;
-  align-items: center;
-  min-height: 64px;
-  padding: 0 16px;
-  color: #fff;
-  text-align: left;
-  background: linear-gradient(180deg, #1c8aff 0%, #0f70dd 100%);
-  border: 1px solid rgba(255, 255, 255, 0.22);
-  border-radius: 12px;
-  box-shadow: 0 12px 24px rgba(22, 119, 255, 0.24);
-}
-
-.agenda-selected-range strong {
-  min-width: 0;
-  overflow: hidden;
-  font-size: 18px;
-  font-weight: 900;
-  line-height: 1.2;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.agenda-selected-range:active {
-  transform: scale(0.992);
-}
-
-.agenda-selected-range:focus-visible {
-  outline: 3px solid rgba(22, 119, 255, 0.24);
-  outline-offset: 2px;
 }
 
 .time-tip {
