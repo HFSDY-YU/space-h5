@@ -6,6 +6,7 @@ import { showImagePreview } from 'vant'
 import { Bell, Building2, ChevronLeft, ChevronRight, Filter, Layers3, MapPin, Search, Users } from '@lucide/vue'
 import { listFloors, listRooms } from '@/api/space'
 import { resolveSpaceAssetUrl, toUiRoomBase } from '@/services/spaceMapper'
+import FilterChipGroup from '@/components/FilterChipGroup.vue'
 
 type AdminRoom = ReturnType<typeof toUiRoomBase> & {
   status: string
@@ -464,59 +465,35 @@ watch(
         <button type="button" @click="resetFilters">重置</button>
       </header>
 
-      <div v-if="optionData.buildings.length" class="filter-group">
-        <h3>楼栋</h3>
-        <div class="filter-options">
-          <button :class="{ active: filters.building === 'all' }" type="button" @click="changeBuildingFilter('all')">
-            全部楼栋
-          </button>
-          <button
-            v-for="item in optionData.buildings"
-            :key="item"
-            :class="{ active: filters.building === item }"
-            type="button"
-            @click="changeBuildingFilter(item)"
-          >
-            {{ item }}
-          </button>
-        </div>
-      </div>
+      <FilterChipGroup
+        v-if="optionData.buildings.length"
+        title="楼栋"
+        all-label="全部楼栋"
+        :options="optionData.buildings"
+        :selected="filters.building"
+        @select-all="changeBuildingFilter('all')"
+        @select="changeBuildingFilter"
+      />
 
-      <div v-if="optionData.floors.length" class="filter-group">
-        <h3>楼层</h3>
-        <div class="filter-options">
-          <button :class="{ active: filters.floor === 'all' }" type="button" @click="changeFloorFilter('all')">
-            全部楼层
-          </button>
-          <button
-            v-for="item in optionData.floors"
-            :key="item"
-            :class="{ active: filters.floor === item }"
-            type="button"
-            @click="changeFloorFilter(item)"
-          >
-            {{ item }}
-          </button>
-        </div>
-      </div>
+      <FilterChipGroup
+        v-if="optionData.floors.length"
+        title="楼层"
+        all-label="全部楼层"
+        :options="optionData.floors"
+        :selected="filters.floor"
+        @select-all="changeFloorFilter('all')"
+        @select="changeFloorFilter"
+      />
 
-      <div v-if="optionData.types.length" class="filter-group">
-        <h3>类型</h3>
-        <div class="filter-options">
-          <button :class="{ active: filters.type === 'all' }" type="button" @click="filters.type = 'all'">
-            全部类型
-          </button>
-          <button
-            v-for="item in optionData.types"
-            :key="item"
-            :class="{ active: filters.type === item }"
-            type="button"
-            @click="filters.type = item"
-          >
-            {{ item }}
-          </button>
-        </div>
-      </div>
+      <FilterChipGroup
+        v-if="optionData.types.length"
+        title="类型"
+        all-label="全部类型"
+        :options="optionData.types"
+        :selected="filters.type"
+        @select-all="filters.type = 'all'"
+        @select="(value: string) => (filters.type = value)"
+      />
 
       <div class="filter-group">
         <h3>状态</h3>
@@ -533,23 +510,16 @@ watch(
         </div>
       </div>
 
-      <div v-if="optionData.equipment.length" class="filter-group">
-        <h3>设备</h3>
-        <div class="filter-options">
-          <button :class="{ active: filters.equipment.length === 0 }" type="button" @click="filters.equipment = []">
-            全部设备
-          </button>
-          <button
-            v-for="item in optionData.equipment"
-            :key="item"
-            :class="{ active: filters.equipment.includes(item) }"
-            type="button"
-            @click="toggleEquipmentFilter(item)"
-          >
-            {{ item }}
-          </button>
-        </div>
-      </div>
+      <FilterChipGroup
+        v-if="optionData.equipment.length"
+        title="设备"
+        all-label="全部设备"
+        multiple
+        :options="optionData.equipment"
+        :selected="filters.equipment"
+        @select-all="filters.equipment = []"
+        @select="toggleEquipmentFilter"
+      />
 
       <button class="filter-confirm" type="button" @click="showFilterPanel = false">
         查看 {{ filteredRooms.length }} 间房间

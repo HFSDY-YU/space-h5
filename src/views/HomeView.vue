@@ -38,6 +38,7 @@ import {
   toRoomStatus,
   toUiRoomBase,
 } from '@/services/spaceMapper'
+import FilterChipGroup from '@/components/FilterChipGroup.vue'
 import type { Room, RoomStatus } from '@/types/space'
 
 type HomeRoomStatusFilter = 'all' | RoomStatus
@@ -655,77 +656,46 @@ function statusClass(status: RoomStatus) {
         </div>
       </div>
 
-      <div v-if="buildingOptions.length" class="filter-group">
-        <h3>楼栋</h3>
-        <div class="filter-options">
-          <button :class="{ active: buildingFilter === 'all' }" type="button" @click="changeBuildingFilter('all')">
-            全部楼栋
-          </button>
-          <button
-            v-for="building in buildingOptions"
-            :key="building"
-            :class="{ active: buildingFilter === building }"
-            type="button"
-            @click="changeBuildingFilter(building)"
-          >
-            {{ building }}
-          </button>
-        </div>
-      </div>
+      <FilterChipGroup
+        v-if="buildingOptions.length"
+        title="楼栋"
+        all-label="全部楼栋"
+        :options="buildingOptions"
+        :selected="buildingFilter"
+        @select-all="changeBuildingFilter('all')"
+        @select="changeBuildingFilter"
+      />
 
-      <div v-if="floorOptions.length" class="filter-group">
-        <h3>楼层</h3>
-        <div class="filter-options">
-          <button :class="{ active: floorFilter === 'all' }" type="button" @click="changeFloorFilter('all')">
-            全部楼层
-          </button>
-          <button
-            v-for="floor in floorOptions"
-            :key="floor"
-            :class="{ active: floorFilter === floor }"
-            type="button"
-            @click="changeFloorFilter(floor)"
-          >
-            {{ floor }}
-          </button>
-        </div>
-      </div>
+      <FilterChipGroup
+        v-if="floorOptions.length"
+        title="楼层"
+        all-label="全部楼层"
+        :options="floorOptions"
+        :selected="floorFilter"
+        @select-all="changeFloorFilter('all')"
+        @select="changeFloorFilter"
+      />
 
-      <div v-if="roomTypeOptions.length" class="filter-group">
-        <h3>教室类型</h3>
-        <div class="filter-options">
-          <button :class="{ active: roomTypeFilter === 'all' }" type="button" @click="roomTypeFilter = 'all'">
-            全部类型
-          </button>
-          <button
-            v-for="roomType in roomTypeOptions"
-            :key="roomType"
-            :class="{ active: roomTypeFilter === roomType }"
-            type="button"
-            @click="roomTypeFilter = roomType"
-          >
-            {{ roomType }}
-          </button>
-        </div>
-      </div>
+      <FilterChipGroup
+        v-if="roomTypeOptions.length"
+        title="教室类型"
+        all-label="全部类型"
+        :options="roomTypeOptions"
+        :selected="roomTypeFilter"
+        @select-all="roomTypeFilter = 'all'"
+        @select="(value: string) => (roomTypeFilter = value)"
+      />
 
-      <div v-if="equipmentOptions.length" class="filter-group">
-        <h3>设备</h3>
-        <div class="filter-options">
-          <button :class="{ active: equipmentFilters.length === 0 }" type="button" @click="equipmentFilters = []">
-            全部设备
-          </button>
-          <button
-            v-for="equipment in equipmentOptions"
-            :key="equipment"
-            :class="{ active: equipmentFilters.includes(equipment) }"
-            type="button"
-            @click="toggleEquipmentFilter(equipment)"
-          >
-            {{ equipment }}
-          </button>
-        </div>
-      </div>
+      <FilterChipGroup
+        v-if="equipmentOptions.length"
+        title="设备"
+        all-label="全部设备"
+        multiple
+        :options="equipmentOptions"
+        :selected="equipmentFilters"
+        @select-all="equipmentFilters = []"
+        @select="toggleEquipmentFilter"
+      />
 
       <button class="filter-confirm" type="button" @click="showFilterPanel = false">
         查看 {{ filteredRooms.length }} 间房间
