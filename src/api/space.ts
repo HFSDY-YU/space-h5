@@ -127,6 +127,7 @@ export interface ReservationSubmitPayload {
   purpose: string
   peopleCount: number
   detailRemark?: string
+  capacityOverrideConfirmed?: boolean
   items: Array<{
     roomId: number
     bookingDate: string

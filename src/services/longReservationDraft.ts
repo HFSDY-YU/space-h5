@@ -14,6 +14,7 @@ export interface LongReservationRoomSnapshot {
   building: string
   floor: string
   capacity: number
+  capacityMax?: number
 }
 
 export interface LongReservationCustomDateSlot {

@@ -355,6 +355,7 @@ function selectRoom(item: RoomAvailability) {
       building: item.room.building,
       floor: item.room.floor,
       capacity: item.room.capacity,
+      capacityMax: item.room.capacityMax,
     },
   })
   router.push('/reservation/long/confirm')

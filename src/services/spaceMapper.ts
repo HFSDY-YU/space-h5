@@ -100,6 +100,15 @@ export function toUiTimePeriod(period: BackendTimePeriod): TimePeriod {
   }
 }
 
+/**
+ * 判断预约人数是否超过房间最大容量。后端仅在房间设置了正数 capacityMax 且人数超过时才拦截，
+ * 此处与后端口径保持一致，用于提交前提示用户确认是否仍然超额提交。
+ */
+export function isCapacityOverflow(peopleCount: number, capacityMax?: number | null) {
+  const max = Number(capacityMax)
+  return !Number.isNaN(max) && max > 0 && Number(peopleCount) > max
+}
+
 export function sortBackendTimePeriods(periods: BackendTimePeriod[]) {
   return [...periods].sort((prev, next) => {
     const orderDiff = (prev.orderNum ?? Number.MAX_SAFE_INTEGER) - (next.orderNum ?? Number.MAX_SAFE_INTEGER)
