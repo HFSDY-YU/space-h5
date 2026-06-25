@@ -39,68 +39,28 @@ import {
 import { useSessionStore } from '@/stores/session'
 import RoomStatusPanel from '@/components/RoomStatusPanel.vue'
 import type { Room, RoomStatus, TimePeriod } from '@/types/space'
-
-type WeekCellStatus = RoomStatus | 'expired'
-type TimelineSegmentStatus = Exclude<RoomStatus, 'free'> | 'expired'
-
-interface WeekCell {
-  slotIndex: number
-  date: string
-  period: TimePeriod
-  status: WeekCellStatus
-  summary: string
-  applicantName: string
-  startTime: string
-  endTime: string
-  reservationId?: string
-  itemId?: string
-}
-
-interface WeekTimelineSegment {
-  id: string
-  date: string
-  status: TimelineSegmentStatus
-  sourceStatus: Exclude<RoomStatus, 'free'>
-  title: string
-  label: string
-  applicantName: string
-  applicantPhone: string
-  contactAddress: string
-  contactText: string
-  startTime: string
-  endTime: string
-  left: number
-  width: number
-  reservationId?: string
-  itemId?: string
-}
-
-interface WeekDayPanel {
-  date: Date
-  value: string
-  monthDay: string
-  weekday: string
-  isToday: boolean
-  cells: WeekCell[]
-  segments: WeekTimelineSegment[]
-  expiredPercent: number
-  availableText: string
-}
-
-interface AgendaTimeTick {
-  key: string
-  time: string
-  top: number
-}
-
-interface SelectedTimeRange {
-  key: string
-  date: string
-  periodId: string
-  startTime: string
-  endTime: string
-  cells: WeekCell[]
-}
+import {
+  buildSegmentContactText,
+  clampPercent,
+  formatMonthDay,
+  getPeriodEnd,
+  getPeriodStart,
+  isOverlappingTimeRange,
+  normalizeDisplayText,
+  pickPeriodItem,
+  roomOpenStatusText,
+  segmentStatusText,
+  startOfWeek,
+  statusText,
+  weekCellStatusText,
+  type AgendaTimeTick,
+  type SelectedTimeRange,
+  type TimelineSegmentStatus,
+  type WeekCell,
+  type WeekCellStatus,
+  type WeekDayPanel,
+  type WeekTimelineSegment,
+} from '@/services/roomSchedule'
 
 const route = useRoute()
 const router = useRouter()
@@ -167,57 +127,6 @@ function parseDateValue(value: unknown) {
 
   const [year = 0, month = 1, day = 1] = dateText.split('-').map(Number)
   return new Date(year, month - 1, day)
-}
-
-function startOfWeek(date: Date) {
-  const nextDate = new Date(date)
-  nextDate.setHours(0, 0, 0, 0)
-  const day = nextDate.getDay()
-  nextDate.setDate(nextDate.getDate() + (day === 0 ? -6 : 1 - day))
-  return nextDate
-}
-
-function formatMonthDay(date: Date) {
-  return `${date.getMonth() + 1}/${date.getDate()}`
-}
-
-function statusText(status: RoomStatus) {
-  if (status === 'free') return '空闲'
-  if (status === 'reviewing') return '审核中'
-  return '占用'
-}
-
-function weekCellStatusText(status: WeekCellStatus) {
-  if (status === 'expired') return '已过期'
-  return statusText(status)
-}
-
-function segmentStatusText(status: TimelineSegmentStatus) {
-  if (status === 'expired') return '已过期'
-  return statusText(status)
-}
-
-function normalizeDisplayText(value: unknown) {
-  return typeof value === 'string' ? value.trim() : value == null ? '' : String(value).trim()
-}
-
-function buildSegmentContactText(item: BackendReservationItem) {
-  const contactParts: string[] = []
-  const applicantPhone = normalizeDisplayText(item.applicantPhone)
-  const contactAddress = normalizeDisplayText(item.orgName)
-
-  // 后端场次列表会合并主预约的申请人快照；这里统一压缩成一行联系信息，避免 30 分钟日程块被撑高。
-  if (applicantPhone) contactParts.push(`联系 ${applicantPhone}`)
-  if (contactAddress) contactParts.push(contactAddress)
-  return contactParts.join(' · ')
-}
-
-function roomOpenStatusText(status?: string) {
-  return status === '1' ? '已停用' : '启用中'
-}
-
-function clampPercent(value: number) {
-  return Math.min(100, Math.max(0, value))
 }
 
 const selectedDate = ref(parseDateValue(route.query.date))
@@ -352,37 +261,6 @@ const timePeriods = computed(() => {
   const periods = detailQuery.data.value?.periods ?? []
   return periods.length ? periods : buildBookableTimeSlots()
 })
-
-function getPeriodStart(period: TimePeriod) {
-  return formatBackendTime(period.startTime || period.time.split('-')[0])
-}
-
-function getPeriodEnd(period: TimePeriod) {
-  return formatBackendTime(period.endTime || period.time.split('-')[1])
-}
-
-function isOverlappingTimeRange(startTime: string, endTime: string, period: TimePeriod) {
-  const itemStart = timeToMinutes(startTime)
-  const itemEnd = timeToMinutes(endTime)
-  const periodStart = timeToMinutes(getPeriodStart(period))
-  const periodEnd = timeToMinutes(getPeriodEnd(period))
-  return itemStart < periodEnd && itemEnd > periodStart
-}
-
-function pickPeriodItem(items: BackendReservationItem[], period: TimePeriod) {
-  const matchedItems = items.filter((item) => {
-    const status = toRoomStatus(item.itemStatus)
-    if (!status || status === 'free') return false
-    const startTime = formatBackendTime(item.startTime)
-    const endTime = formatBackendTime(item.endTime)
-    return startTime && endTime && isOverlappingTimeRange(startTime, endTime, period)
-  })
-
-  return (
-    matchedItems.find((item) => toRoomStatus(item.itemStatus) === 'reviewing') ??
-    matchedItems.find((item) => toRoomStatus(item.itemStatus) === 'occupied')
-  )
-}
 
 function getExpiredPercent(dateValue: string) {
   const cutoffMinute = getExpiredCutoffMinute(dateValue)
