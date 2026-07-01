@@ -56,7 +56,9 @@ async function submitLogin() {
       code: form.captcha,
       uuid: captchaUuid.value,
     })
-    router.replace(session.mustChangePassword ? { name: 'mine-password', query: { force: '1' } } : '/home')
+    router.replace(
+      session.mustChangePassword || session.initialPasswordUnset ? { name: 'mine-password', query: { force: '1' } } : '/home',
+    )
   } catch (error) {
     showToast(error instanceof ApiError || error instanceof Error ? error.message : '登录失败')
     if (captchaEnabled.value) {

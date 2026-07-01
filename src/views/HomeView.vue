@@ -22,6 +22,7 @@ import {
   listReservationItems,
   type BackendReservationItem,
 } from '@/api/space'
+import { listTopNotices, NOTICE_QUERY_KEY } from '@/api/notice'
 import {
   addDays,
   BOOKABLE_END_TIME,
@@ -166,6 +167,13 @@ const floorsQuery = useQuery({
   },
   staleTime: 5 * 60_000,
 })
+
+const noticesQuery = useQuery({
+  queryKey: NOTICE_QUERY_KEY,
+  queryFn: listTopNotices,
+  retry: 1,
+})
+const hasUnreadNotice = computed(() => (noticesQuery.data.value?.unreadCount ?? 0) > 0)
 
 const rooms = computed(() => homeQuery.data.value ?? [])
 const floors = computed(() => floorsQuery.data.value ?? [])
@@ -480,7 +488,7 @@ function statusClass(status: RoomStatus) {
             <span v-if="activeFilterCount">{{ activeFilterCount }}</span>
           </button>
           <button class="message-button" type="button" aria-label="消息" @click="router.push('/messages')">
-            <i></i>
+            <i v-if="hasUnreadNotice"></i>
             <Bell :size="24" />
           </button>
         </div>

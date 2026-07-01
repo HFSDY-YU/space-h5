@@ -18,6 +18,13 @@ const router = createRouter({
       meta: { public: true },
     },
     {
+      path: '/onecard-login',
+      alias: ['/onecard/login'],
+      name: 'onecard-login',
+      component: () => import('@/views/OnecardLoginView.vue'),
+      meta: { public: true },
+    },
+    {
       path: '/',
       component: MobileLayout,
       redirect: '/home',
@@ -128,7 +135,7 @@ router.beforeEach((to) => {
   const session = useSessionStore()
   if (to.meta.public) return true
   if (!session.isLoggedIn) return { name: 'login' }
-  if (session.mustChangePassword && to.name !== 'mine-password') {
+  if ((session.mustChangePassword || session.initialPasswordUnset) && to.name !== 'mine-password') {
     return { name: 'mine-password', query: { force: '1' }, replace: true }
   }
 

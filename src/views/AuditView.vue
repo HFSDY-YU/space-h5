@@ -49,7 +49,9 @@ const dateRangeText = computed(() => {
   return `${bookingDateStart.value} 至 ${bookingDateEnd.value}`
 })
 const workbenchTitle = computed(() => (session.isProperty ? '物业工作台' : session.isTeacher ? '老师工作台' : '审核工作台'))
-const workbenchSubtitle = computed(() => (session.isProperty ? '处理物业复审与取消审核' : '处理同校学生预约初审'))
+const workbenchSubtitle = computed(() =>
+  session.isProperty ? '处理物业复审与取消审核' : '处理本部门及下级部门学生预约初审',
+)
 const activeFilterCount = computed(() => {
   return (
     Number(typeFilter.value !== 'all') +
@@ -684,9 +686,9 @@ async function submitReturnAudit() {
 
 .batch-bar {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  gap: 8px;
+  gap: 8px 10px;
   margin-bottom: 12px;
   padding: 10px;
   background: #fff;
@@ -694,9 +696,36 @@ async function submitReturnAudit() {
   border-radius: 16px;
 }
 
-.batch-bar button:first-child,
-.batch-bar span {
+/* 第一行：全选按钮 + 已选计数；第二行：三个批量操作按钮等分铺满，避免窄屏挤成一行。 */
+.batch-bar button:first-child {
+  grid-column: 1;
   grid-row: 1;
+}
+
+.batch-bar span {
+  grid-column: 2;
+  grid-row: 1;
+  justify-self: end;
+  overflow: hidden;
+  color: var(--space-subtext);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.batch-bar button:nth-child(3) {
+  grid-column: 1 / 2;
+  grid-row: 2;
+}
+
+.batch-bar button:nth-child(4) {
+  grid-column: 2 / 3;
+  grid-row: 2;
+}
+
+.batch-bar button:nth-child(5) {
+  grid-column: 1 / 3;
+  grid-row: 3;
 }
 
 .batch-bar button {
@@ -704,7 +733,7 @@ async function submitReturnAudit() {
   align-items: center;
   justify-content: center;
   gap: 5px;
-  min-height: 38px;
+  min-height: 40px;
   padding: 0 10px;
   color: var(--space-blue);
   background: #eaf2ff;
@@ -727,14 +756,6 @@ async function submitReturnAudit() {
   opacity: 0.56;
 }
 
-.batch-bar span {
-  overflow: hidden;
-  color: var(--space-subtext);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 13px;
-}
-
 .audit-card h2 {
   margin: 4px 0 0;
   font-size: 17px;
@@ -746,8 +767,21 @@ async function submitReturnAudit() {
 
 .audit-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 14px;
+}
+
+/* 详情按钮宽度自适应内容；通过/驳回/退回均分剩余空间，按钮过多时自动换行不溢出。 */
+.audit-actions .plain-button {
+  flex: 0 0 auto;
+  min-height: 40px;
+}
+
+.audit-actions .approve,
+.audit-actions .reject,
+.audit-actions .return {
+  flex: 1 1 auto;
 }
 
 .select-button {
@@ -769,7 +803,8 @@ async function submitReturnAudit() {
   align-items: center;
   justify-content: center;
   gap: 4px;
-  min-height: 36px;
+  min-width: 72px;
+  min-height: 40px;
   padding: 0 13px;
   border: 0;
   border-radius: 999px;
@@ -961,15 +996,6 @@ async function submitReturnAudit() {
   .audit-search input,
   .filter-button {
     font-size: 14px;
-  }
-
-  .batch-bar {
-    grid-template-columns: 1fr 1fr;
-  }
-
-  .batch-bar button:first-child,
-  .batch-bar span {
-    grid-row: auto;
   }
 }
 </style>

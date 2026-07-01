@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { showToast } from 'vant'
 import { ArrowLeft, KeyRound, LockKeyhole, LogOut, ShieldAlert, ShieldCheck } from '@lucide/vue'
-import { updatePassword } from '@/api/auth'
+import { getProfile, initPassword, updatePassword } from '@/api/auth'
 import { useSessionStore } from '@/stores/session'
 
 const router = useRouter()
@@ -11,6 +11,7 @@ const route = useRoute()
 const session = useSessionStore()
 const passwordLoading = ref(false)
 const logoutLoading = ref(false)
+const profileLoading = ref(false)
 const passwordForm = reactive({
   oldPassword: '',
   newPassword: '',
@@ -20,9 +21,43 @@ const passwordForm = reactive({
 const strongPasswordRule =
   /^(?=.*[A-Z])(?=.*[a-z])(?=.*\d)(?=.*[~!@#$%^&*()\-=_+])[A-Za-z\d~!@#$%^&*()\-=_+]{8,20}$/
 const isForceChange = computed(() => session.mustChangePassword || route.query.force === '1')
+const isInitialPasswordUnset = computed(() => session.initialPasswordUnset)
 const canSubmit = computed(() => {
-  return Boolean(passwordForm.oldPassword && passwordForm.newPassword && passwordForm.confirmPassword)
+  return Boolean(
+    !profileLoading.value &&
+      (isInitialPasswordUnset.value || passwordForm.oldPassword) &&
+      passwordForm.newPassword &&
+      passwordForm.confirmPassword,
+  )
 })
+const pageTitle = computed(() => (isInitialPasswordUnset.value ? '设置登录密码' : '修改密码'))
+const heroTitle = computed(() => {
+  if (isInitialPasswordUnset.value) return '请设置登录密码'
+  return isForceChange.value ? '请先修改初始密码' : '账号安全'
+})
+const heroDescription = computed(() => {
+  if (isInitialPasswordUnset.value) {
+    return '当前账号由一卡通同步创建，设置后可使用账号和密码直接登录。'
+  }
+
+  return isForceChange.value ? '当前密码为初始或临时密码，修改后才可继续使用系统。' : '修改后需要使用新密码重新登录。'
+})
+const successTip = computed(() => {
+  if (isInitialPasswordUnset.value) return '设置成功后即可继续使用系统。'
+  return isForceChange.value ? '保存成功后即可继续使用系统。' : '提交成功后系统会清理当前登录状态。'
+})
+
+async function refreshInitialPasswordState() {
+  profileLoading.value = true
+  try {
+    const profile = await getProfile()
+    if (typeof profile.pwdSet === 'number') {
+      session.setPasswordSecurityState({ initialUnset: profile.pwdSet === 0 })
+    }
+  } finally {
+    profileLoading.value = false
+  }
+}
 
 function resetPasswordForm() {
   passwordForm.oldPassword = ''
@@ -41,7 +76,7 @@ async function submitPassword() {
     return
   }
 
-  if (passwordForm.oldPassword === passwordForm.newPassword) {
+  if (!isInitialPasswordUnset.value && passwordForm.oldPassword === passwordForm.newPassword) {
     showToast('新密码不能与旧密码相同')
     return
   }
@@ -52,16 +87,21 @@ async function submitPassword() {
   }
 
   passwordLoading.value = true
+  const wasInitialPasswordUnset = isInitialPasswordUnset.value
   try {
-    await updatePassword({
-      oldPassword: passwordForm.oldPassword,
-      newPassword: passwordForm.newPassword,
-    })
+    if (wasInitialPasswordUnset) {
+      await initPassword({ newPassword: passwordForm.newPassword })
+    } else {
+      await updatePassword({
+        oldPassword: passwordForm.oldPassword,
+        newPassword: passwordForm.newPassword,
+      })
+    }
     resetPasswordForm()
-    session.setPasswordSecurityState({ mustChange: false, expired: false })
+    session.setPasswordSecurityState({ mustChange: false, expired: false, initialUnset: false })
 
-    if (isForceChange.value) {
-      showToast('密码已修改')
+    if (isForceChange.value || wasInitialPasswordUnset) {
+      showToast(wasInitialPasswordUnset ? '登录密码已设置' : '密码已修改')
       await session.refreshProfile()
       router.replace('/home')
       return
@@ -86,6 +126,12 @@ async function handleLogout() {
     logoutLoading.value = false
   }
 }
+
+onMounted(() => {
+  refreshInitialPasswordState().catch(() => {
+    // 密码页仍可按已缓存的安全状态展示；读取失败时由提交接口返回明确原因。
+  })
+})
 </script>
 
 <template>
@@ -95,25 +141,26 @@ async function handleLogout() {
         <ArrowLeft :size="20" />
       </button>
       <span v-else></span>
-      <strong>修改密码</strong>
+      <strong>{{ pageTitle }}</strong>
       <span></span>
     </header>
 
     <section class="password-hero" :class="{ 'password-hero--force': isForceChange }">
       <div class="hero-icon">
-        <ShieldAlert v-if="isForceChange" :size="30" />
+        <ShieldAlert v-if="isForceChange || isInitialPasswordUnset" :size="30" />
         <LockKeyhole v-else :size="30" />
       </div>
       <div>
-        <h1>{{ isForceChange ? '请先修改初始密码' : '账号安全' }}</h1>
-        <p>{{ isForceChange ? '当前密码为初始或临时密码，修改后才可继续使用系统。' : '修改后需要使用新密码重新登录。' }}</p>
+        <h1>{{ heroTitle }}</h1>
+        <p>{{ heroDescription }}</p>
       </div>
     </section>
 
     <section class="card password-card">
       <h2 class="section-title">密码信息</h2>
-      <div class="password-form">
-        <label>
+      <van-loading v-if="profileLoading" type="spinner">读取账号安全状态</van-loading>
+      <div v-else class="password-form">
+        <label v-if="!isInitialPasswordUnset">
           <span>旧密码</span>
           <input v-model.trim="passwordForm.oldPassword" autocomplete="current-password" type="password" />
         </label>
@@ -135,7 +182,7 @@ async function handleLogout() {
       </article>
       <article>
         <ShieldCheck :size="18" />
-        <span>{{ isForceChange ? '保存成功后即可继续使用系统。' : '提交成功后系统会清理当前登录状态。' }}</span>
+        <span>{{ successTip }}</span>
       </article>
     </section>
 

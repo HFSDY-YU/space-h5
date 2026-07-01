@@ -1,5 +1,7 @@
 import { http, type AjaxResult } from '@/api/http'
 
+type NoticeReadFlag = boolean | number | string
+
 export interface BackendNotice {
   noticeId?: number
   noticeTitle?: string
@@ -8,18 +10,47 @@ export interface BackendNotice {
   status?: string
   createBy?: string
   createTime?: string
-  isRead?: boolean
+  isRead?: NoticeReadFlag
+  read?: NoticeReadFlag
 }
 
 type NoticeListResult = AjaxResult<BackendNotice[]> & {
   unreadCount?: number
 }
 
-export async function listTopNotices() {
+export interface NoticeListData {
+  rows: BackendNotice[]
+  unreadCount: number
+}
+
+export const NOTICE_QUERY_KEY = ['h5-notices'] as const
+
+function normalizeReadFlag(value: NoticeReadFlag | undefined) {
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'number') return value > 0
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    return normalized === 'true' || normalized === '1' || normalized === 'yes'
+  }
+  return false
+}
+
+export function isNoticeRead(notice: BackendNotice) {
+  return normalizeReadFlag(notice.isRead ?? notice.read)
+}
+
+export function isNoticeUnread(notice: BackendNotice) {
+  return !isNoticeRead(notice)
+}
+
+export async function listTopNotices(): Promise<NoticeListData> {
   const result = await http.get<NoticeListResult>('/system/notice/listTop')
+  const rows = result.data ?? []
+  const unreadCount = Number(result.unreadCount)
+
   return {
-    rows: result.data ?? [],
-    unreadCount: Number(result.unreadCount ?? 0),
+    rows,
+    unreadCount: Number.isFinite(unreadCount) ? unreadCount : rows.filter(isNoticeUnread).length,
   }
 }
 

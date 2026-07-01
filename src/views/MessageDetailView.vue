@@ -1,10 +1,17 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { useRoute, useRouter } from 'vue-router'
 import { showToast } from 'vant'
 import { ArrowLeft, BellRing, CheckCheck, Megaphone } from '@lucide/vue'
-import { getNotice, markNoticeRead, type BackendNotice } from '@/api/notice'
+import {
+  getNotice,
+  isNoticeUnread,
+  markNoticeRead,
+  NOTICE_QUERY_KEY,
+  type BackendNotice,
+  type NoticeListData,
+} from '@/api/notice'
 import { messages as fallbackMessages } from '@/mock/spaceData'
 import type { MessageItem } from '@/types/space'
 
@@ -12,6 +19,7 @@ const route = useRoute()
 const router = useRouter()
 const queryClient = useQueryClient()
 const messageId = computed(() => String(route.params.messageId))
+const autoMarkedIds = new Set<string>()
 
 function stripHtml(value?: string) {
   return (value ?? '')
@@ -35,7 +43,7 @@ function toNoticeMessage(notice: BackendNotice): MessageItem {
     title: notice.noticeTitle || '通知',
     content: stripHtml(notice.noticeContent) || '暂无通知内容',
     time: formatNoticeTime(notice.createTime),
-    unread: !notice.isRead,
+    unread: isNoticeUnread(notice),
     type: notice.noticeType === '2' ? 'system' : 'reservation',
   }
 }
@@ -79,21 +87,61 @@ const typeText = computed(() => {
   return '系统通知'
 })
 
+function patchNoticeRead(id: string) {
+  queryClient.setQueryData<MessageItem>(['h5-message-detail', id], (current) =>
+    current ? { ...current, unread: false } : current,
+  )
+
+  queryClient.setQueryData<NoticeListData>(NOTICE_QUERY_KEY, (current) => {
+    if (!current) return current
+
+    let changedCount = 0
+    const rows = current.rows.map((notice) => {
+      if (String(notice.noticeId ?? '') !== id || !isNoticeUnread(notice)) return notice
+
+      changedCount += 1
+      return { ...notice, isRead: true }
+    })
+
+    return {
+      ...current,
+      rows,
+      unreadCount: Math.max(0, current.unreadCount - changedCount),
+    }
+  })
+}
+
+async function markMessageRead(id: string, options: { silent?: boolean } = {}) {
+  try {
+    patchNoticeRead(id)
+    await markNoticeRead(id)
+    await queryClient.invalidateQueries({ queryKey: NOTICE_QUERY_KEY })
+    if (!options.silent) showToast('已标记为已读')
+  } catch (error) {
+    await queryClient.invalidateQueries({ queryKey: NOTICE_QUERY_KEY })
+    if (!options.silent) showToast(error instanceof Error ? error.message : '标记已读失败')
+  }
+}
+
 async function markCurrentRead() {
   if (message.value.id.startsWith('mock-')) {
     showToast('示例消息无需标记')
     return
   }
 
-  try {
-    await markNoticeRead(message.value.id)
-    await queryClient.invalidateQueries({ queryKey: ['h5-notices'] })
-    await queryClient.invalidateQueries({ queryKey: ['h5-message-detail', message.value.id] })
-    showToast('已标记为已读')
-  } catch (error) {
-    showToast(error instanceof Error ? error.message : '标记已读失败')
-  }
+  await markMessageRead(message.value.id)
 }
+
+watch(
+  message,
+  (current) => {
+    if (!current.unread || current.id.startsWith('mock-') || autoMarkedIds.has(current.id)) return
+
+    autoMarkedIds.add(current.id)
+    void markMessageRead(current.id, { silent: true })
+  },
+  { immediate: true },
+)
 </script>
 
 <template>
@@ -188,7 +236,6 @@ async function markCurrentRead() {
 }
 
 .detail-hero p,
-.detail-hero h1,
 .detail-hero time {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -201,9 +248,14 @@ async function markCurrentRead() {
 }
 
 .detail-hero h1 {
+  display: -webkit-box;
+  overflow: hidden;
   margin: 0 0 7px;
   font-size: 22px;
   line-height: 1.28;
+  word-break: break-word;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
 }
 
 .detail-hero time {

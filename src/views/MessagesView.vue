@@ -4,7 +4,16 @@ import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { useRouter } from 'vue-router'
 import { showToast } from 'vant'
 import { ArrowLeft, BellRing, CheckCheck, ChevronRight, Megaphone, RefreshCw } from '@lucide/vue'
-import { getNotice, listTopNotices, markNoticeRead, markNoticesReadAll, type BackendNotice } from '@/api/notice'
+import {
+  getNotice,
+  isNoticeUnread,
+  listTopNotices,
+  markNoticeRead,
+  markNoticesReadAll,
+  NOTICE_QUERY_KEY,
+  type BackendNotice,
+  type NoticeListData,
+} from '@/api/notice'
 import { messages as fallbackMessages } from '@/mock/spaceData'
 import type { MessageItem } from '@/types/space'
 
@@ -50,7 +59,7 @@ function toNoticeMessage(notice: BackendNotice): MessageItem {
     title: notice.noticeTitle || '通知',
     content: stripHtml(notice.noticeContent) || '点击查看通知详情',
     time: formatNoticeTime(notice.createTime),
-    unread: !notice.isRead,
+    unread: isNoticeUnread(notice),
     type: notice.noticeType === '2' ? 'system' : 'reservation',
   }
 }
@@ -74,18 +83,24 @@ async function fillNoticeContent(notice: BackendNotice) {
 }
 
 const noticesQuery = useQuery({
-  queryKey: ['h5-notices'],
+  queryKey: NOTICE_QUERY_KEY,
   queryFn: async () => {
     const result = await listTopNotices()
     const detailRows = await Promise.all(result.rows.map(fillNoticeContent))
-    return detailRows.map(toNoticeMessage)
+    return {
+      ...result,
+      rows: detailRows,
+    }
   },
   retry: 1,
 })
 
-const noticeMessages = computed(() => noticesQuery.data.value ?? toFallbackMessages())
+const noticeMessages = computed(() => {
+  if (!noticesQuery.data.value) return toFallbackMessages()
+  return noticesQuery.data.value.rows.map(toNoticeMessage)
+})
 const unreadMessages = computed(() => noticeMessages.value.filter((message) => message.unread))
-const unreadCount = computed(() => unreadMessages.value.length)
+const unreadCount = computed(() => noticesQuery.data.value?.unreadCount ?? unreadMessages.value.length)
 const visibleMessages = computed(() =>
   onlyUnread.value ? unreadMessages.value : noticeMessages.value,
 )
@@ -94,22 +109,46 @@ const isError = computed(() => noticesQuery.isError.value && !noticesQuery.data.
 
 async function refreshNotices() {
   try {
-    await queryClient.invalidateQueries({ queryKey: ['h5-notices'] })
+    await queryClient.invalidateQueries({ queryKey: NOTICE_QUERY_KEY })
   } catch (error) {
     showToast(error instanceof Error ? error.message : '刷新失败')
   }
 }
 
+function patchReadCache(ids: string[]) {
+  const idSet = new Set(ids)
+  queryClient.setQueryData<NoticeListData>(NOTICE_QUERY_KEY, (current) => {
+    if (!current) return current
+
+    let changedCount = 0
+    const rows = current.rows.map((notice) => {
+      const id = String(notice.noticeId ?? '')
+      if (!idSet.has(id) || !isNoticeUnread(notice)) return notice
+
+      changedCount += 1
+      return { ...notice, isRead: true }
+    })
+
+    return {
+      ...current,
+      rows,
+      unreadCount: Math.max(0, current.unreadCount - changedCount),
+    }
+  })
+}
+
 async function openMessage(message: MessageItem) {
-  router.push(`/messages/${message.id}`)
+  void router.push(`/messages/${message.id}`)
 
   if (!message.unread || message.id.startsWith('mock-')) return
 
   markingId.value = message.id
+  patchReadCache([message.id])
   try {
     await markNoticeRead(message.id)
-    await queryClient.invalidateQueries({ queryKey: ['h5-notices'] })
+    await queryClient.invalidateQueries({ queryKey: NOTICE_QUERY_KEY })
   } catch (error) {
+    await queryClient.invalidateQueries({ queryKey: NOTICE_QUERY_KEY })
     showToast(error instanceof Error ? error.message : '标记已读失败')
   } finally {
     markingId.value = ''
@@ -124,11 +163,13 @@ async function markAllRead() {
   }
 
   markingAll.value = true
+  patchReadCache(ids)
   try {
     await markNoticesReadAll(ids)
-    await queryClient.invalidateQueries({ queryKey: ['h5-notices'] })
+    await queryClient.invalidateQueries({ queryKey: NOTICE_QUERY_KEY })
     showToast('已全部标记为已读')
   } catch (error) {
+    await queryClient.invalidateQueries({ queryKey: NOTICE_QUERY_KEY })
     showToast(error instanceof Error ? error.message : '操作失败')
   } finally {
     markingAll.value = false
@@ -193,6 +234,7 @@ async function markAllRead() {
           </span>
           <span class="message-main">
             <span class="message-title-row">
+              <i v-if="message.unread" class="unread-dot" aria-hidden="true"></i>
               <strong>{{ message.title }}</strong>
               <time>{{ message.time || '-' }}</time>
             </span>
@@ -200,9 +242,10 @@ async function markAllRead() {
               {{ message.content }}
             </span>
           </span>
-          <i v-if="message.unread && markingId !== message.id"></i>
-          <van-loading v-else-if="markingId === message.id" class="message-loading" size="16" />
-          <ChevronRight class="message-more" :size="18" />
+          <span class="message-aside">
+            <van-loading v-if="markingId === message.id" size="16" />
+            <ChevronRight v-else class="message-more" :size="18" />
+          </span>
         </button>
       </article>
 
@@ -389,13 +432,22 @@ async function markAllRead() {
 }
 
 .message-title-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
+  display: flex;
   align-items: center;
+  gap: 8px;
+}
+
+.unread-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  background: var(--space-red);
+  border-radius: 999px;
 }
 
 .message-title-row strong {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   color: var(--space-text);
   font-size: 16px;
@@ -405,6 +457,7 @@ async function markAllRead() {
 }
 
 .message-title-row time {
+  flex: 0 0 auto;
   color: var(--space-muted);
   font-size: 12px;
 }
@@ -419,24 +472,13 @@ async function markAllRead() {
   -webkit-line-clamp: 2;
 }
 
-.message-card i {
-  position: absolute;
-  top: 13px;
-  right: 13px;
-  width: 8px;
-  height: 8px;
-  background: var(--space-red);
-  border-radius: 999px;
-}
-
-.message-loading {
-  position: absolute;
-  top: 9px;
-  right: 9px;
+.message-aside {
+  display: grid;
+  place-items: center;
+  align-self: center;
 }
 
 .message-more {
-  align-self: center;
   color: var(--space-muted);
 }
 

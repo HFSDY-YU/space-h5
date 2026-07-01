@@ -35,6 +35,11 @@ export class ApiError extends Error {
   }
 }
 
+type RequestHeaderFlags = AxiosRequestConfig['headers'] & {
+  isToken?: boolean | string
+  repeatSubmit?: boolean | string
+}
+
 const service = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '/dev-api',
   timeout: 15000,
@@ -69,9 +74,18 @@ function isBusinessResponse(data: unknown): data is AjaxResult | TableDataInfo<u
 
 service.interceptors.request.use((config) => {
   const token = localStorage.getItem(TOKEN_STORAGE_KEY)
+  const headers = config.headers as RequestHeaderFlags | undefined
+  const skipToken = headers?.isToken === false || headers?.isToken === 'false'
+
+  // 兼容 RuoYi PC 端的请求标记：登录、验证码等公开接口可以声明 isToken=false。
+  // 发送前移除这些前端内部标记，避免它们作为真实 HTTP Header 泄漏到后端。
+  if (headers) {
+    delete headers.isToken
+    delete headers.repeatSubmit
+  }
 
   // RuoYi 后端统一使用 Authorization: Bearer <token>，这里集中注入，页面不直接处理 token。
-  if (token) {
+  if (token && !skipToken) {
     config.headers.Authorization = `Bearer ${token}`
   }
 

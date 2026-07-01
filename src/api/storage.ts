@@ -8,6 +8,7 @@ export const PERMISSIONS_STORAGE_KEY = 'space-h5-permissions'
 export const MUST_CHANGE_PASSWORD_STORAGE_KEY = 'space-h5-must-change-password'
 export const PASSWORD_EXPIRED_STORAGE_KEY = 'space-h5-password-expired'
 export const PASSWORD_CHAR_TYPE_STORAGE_KEY = 'space-h5-password-char-type'
+export const INITIAL_PASSWORD_UNSET_STORAGE_KEY = 'space-h5-initial-password-unset'
 
 export function readJsonStorage<T>(key: string, fallback: T): T {
   const rawValue = localStorage.getItem(key)
@@ -40,4 +41,5 @@ export function clearSessionStorage() {
   localStorage.removeItem(MUST_CHANGE_PASSWORD_STORAGE_KEY)
   localStorage.removeItem(PASSWORD_EXPIRED_STORAGE_KEY)
   localStorage.removeItem(PASSWORD_CHAR_TYPE_STORAGE_KEY)
+  localStorage.removeItem(INITIAL_PASSWORD_UNSET_STORAGE_KEY)
 }

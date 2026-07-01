@@ -1,8 +1,17 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { getInfo, login as loginByPassword, logout as logoutApi, type BackendUser, type LoginPayload } from '@/api/auth'
+import {
+  getProfile,
+  getInfo,
+  login as loginByPassword,
+  logout as logoutApi,
+  onecardLogin as onecardLoginApi,
+  type BackendUser,
+  type LoginPayload,
+} from '@/api/auth'
 import {
   clearSessionStorage,
+  INITIAL_PASSWORD_UNSET_STORAGE_KEY,
   PERMISSIONS_STORAGE_KEY,
   MUST_CHANGE_PASSWORD_STORAGE_KEY,
   PASSWORD_CHAR_TYPE_STORAGE_KEY,
@@ -86,6 +95,7 @@ export const useSessionStore = defineStore('session', () => {
   const mustChangePassword = ref(localStorage.getItem(MUST_CHANGE_PASSWORD_STORAGE_KEY) === '1')
   const passwordExpired = ref(localStorage.getItem(PASSWORD_EXPIRED_STORAGE_KEY) === '1')
   const passwordCharType = ref(localStorage.getItem(PASSWORD_CHAR_TYPE_STORAGE_KEY) || '0')
+  const initialPasswordUnset = ref(localStorage.getItem(INITIAL_PASSWORD_UNSET_STORAGE_KEY) === '1')
 
   const userName = computed(() => {
     if (user.value.nickName) return user.value.nickName
@@ -145,6 +155,7 @@ export const useSessionStore = defineStore('session', () => {
     mustChange?: boolean
     expired?: boolean
     charType?: string | number
+    initialUnset?: boolean
   }) {
     // 后端 getInfo 返回的安全状态会同时被路由守卫和修改密码页使用，集中保存避免刷新后丢失。
     if (typeof options.mustChange === 'boolean') {
@@ -161,10 +172,22 @@ export const useSessionStore = defineStore('session', () => {
       passwordCharType.value = String(options.charType || '0')
       localStorage.setItem(PASSWORD_CHAR_TYPE_STORAGE_KEY, passwordCharType.value)
     }
+
+    if (typeof options.initialUnset === 'boolean') {
+      initialPasswordUnset.value = options.initialUnset
+      localStorage.setItem(INITIAL_PASSWORD_UNSET_STORAGE_KEY, options.initialUnset ? '1' : '0')
+    }
   }
 
   async function refreshProfile() {
     const info = await getInfo()
+    let profilePwdSet: number | undefined
+    try {
+      const profile = await getProfile()
+      profilePwdSet = typeof profile.pwdSet === 'number' ? profile.pwdSet : undefined
+    } catch {
+      // pwdSet 只影响一卡通首次设置登录密码；读取失败时保留 getInfo 的强制改密流程。
+    }
     const nextUser = toSessionUser(info.user)
     const nextRoles = info.roles ?? []
     const nextPermissions = info.permissions ?? []
@@ -178,6 +201,7 @@ export const useSessionStore = defineStore('session', () => {
       mustChange: Boolean(info.isDefaultModifyPwd),
       expired: Boolean(info.isPasswordExpired),
       charType: info.pwdChrtype,
+      initialUnset: profilePwdSet === undefined ? undefined : profilePwdSet === 0,
     })
     writeJsonStorage(USER_STORAGE_KEY, nextUser)
     writeJsonStorage(ROLES_STORAGE_KEY, nextRoles)
@@ -187,6 +211,22 @@ export const useSessionStore = defineStore('session', () => {
   async function login(payload: LoginPayload) {
     const result = await loginByPassword(payload)
 
+    token.value = result.token
+    localStorage.setItem(TOKEN_STORAGE_KEY, result.token)
+
+    try {
+      await refreshProfile()
+    } catch (error) {
+      clearSessionStorage()
+      token.value = ''
+      throw error
+    }
+  }
+
+  async function onecardLogin(p: string) {
+    const result = await onecardLoginApi({ p })
+
+    // 一卡通登录和账号密码登录最终都依赖后端 token，拿到 token 后统一刷新账号、角色和强制改密状态。
     token.value = result.token
     localStorage.setItem(TOKEN_STORAGE_KEY, result.token)
 
@@ -215,6 +255,7 @@ export const useSessionStore = defineStore('session', () => {
     mustChangePassword.value = false
     passwordExpired.value = false
     passwordCharType.value = '0'
+    initialPasswordUnset.value = false
     clearSessionStorage()
   }
 
@@ -227,6 +268,7 @@ export const useSessionStore = defineStore('session', () => {
     mustChangePassword,
     passwordExpired,
     passwordCharType,
+    initialPasswordUnset,
     userName,
     roleLabel,
     isStudent,
@@ -245,6 +287,7 @@ export const useSessionStore = defineStore('session', () => {
     setPasswordSecurityState,
     refreshProfile,
     login,
+    onecardLogin,
     logout,
   }
 })

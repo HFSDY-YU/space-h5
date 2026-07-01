@@ -17,6 +17,10 @@ export interface LoginResponse extends AjaxResult {
   token: string
 }
 
+export interface OnecardLoginPayload {
+  p: string
+}
+
 export interface BackendRole {
   roleKey?: string
   roleName?: string
@@ -42,6 +46,7 @@ export interface BackendUser {
 export interface ProfileResponse extends AjaxResult<BackendUser> {
   roleGroup?: string
   postGroup?: string
+  pwdSet?: number
 }
 
 export interface UserInfoResponse extends AjaxResult {
@@ -85,6 +90,15 @@ export function login(payload: LoginPayload) {
   return http.post<LoginResponse>('/login', payload)
 }
 
+export function onecardLogin(payload: OnecardLoginPayload) {
+  return http.post<LoginResponse>('/onecard/login', payload, {
+    headers: {
+      isToken: false,
+      repeatSubmit: false,
+    },
+  })
+}
+
 export function getInfo() {
   return http.get<UserInfoResponse>('/getInfo')
 }
@@ -95,6 +109,10 @@ export function getProfile() {
 
 export function updatePassword(payload: { oldPassword: string; newPassword: string }) {
   return http.put<AjaxResult>('/system/user/profile/updatePwd', payload)
+}
+
+export function initPassword(payload: { newPassword: string }) {
+  return http.put<AjaxResult>('/system/user/profile/initPwd', payload)
 }
 
 export function getPasswordResetConfig() {
