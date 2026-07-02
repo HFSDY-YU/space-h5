@@ -76,7 +76,10 @@ async function fillNoticeContent(notice: BackendNotice) {
 
   try {
     const detail = await getNotice(notice.noticeId)
-    return detail ? { ...notice, ...detail } : notice
+    // 详情接口 /system/notice/{id} 不返回 isRead（后端 boolean 原始类型恒序列化为 false），
+    // 若整体展开 detail 会把列表接口带来的真实已读状态覆盖成未读，导致红点/未读数错乱。
+    // 这里只补充列表接口缺失的正文内容，其余字段（尤其 isRead）保持列表结果。
+    return detail ? { ...notice, noticeContent: detail.noticeContent } : notice
   } catch {
     return notice
   }
