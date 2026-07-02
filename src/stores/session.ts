@@ -24,6 +24,7 @@ import {
   USER_STORAGE_KEY,
   writeJsonStorage,
 } from '@/api/storage'
+import { clearQueryCache } from '@/api/queryClient'
 import type { UserRole } from '@/types/space'
 
 const roleLabels: Record<UserRole, string> = {
@@ -257,6 +258,8 @@ export const useSessionStore = defineStore('session', () => {
     passwordCharType.value = '0'
     initialPasswordUnset.value = false
     clearSessionStorage()
+    // 清空查询缓存，避免换账号登录后看到上一个用户残留的列表/详情数据。
+    clearQueryCache()
   }
 
   return {

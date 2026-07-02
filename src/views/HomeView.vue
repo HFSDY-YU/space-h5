@@ -22,7 +22,7 @@ import {
   listReservationItems,
   type BackendReservationItem,
 } from '@/api/space'
-import { listTopNotices, NOTICE_QUERY_KEY } from '@/api/notice'
+import { useNoticeBadge } from '@/composables/useNotices'
 import {
   addDays,
   BOOKABLE_END_TIME,
@@ -168,12 +168,7 @@ const floorsQuery = useQuery({
   staleTime: 5 * 60_000,
 })
 
-const noticesQuery = useQuery({
-  queryKey: NOTICE_QUERY_KEY,
-  queryFn: listTopNotices,
-  retry: 1,
-})
-const hasUnreadNotice = computed(() => (noticesQuery.data.value?.unreadCount ?? 0) > 0)
+const { hasUnread: hasUnreadNotice } = useNoticeBadge()
 
 const rooms = computed(() => homeQuery.data.value ?? [])
 const floors = computed(() => floorsQuery.data.value ?? [])

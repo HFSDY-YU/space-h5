@@ -6,14 +6,14 @@ import { showToast } from 'vant'
 import { ArrowLeft, BellRing, CheckCheck, ChevronRight, Megaphone, RefreshCw } from '@lucide/vue'
 import {
   getNotice,
-  isNoticeUnread,
   listTopNotices,
   markNoticeRead,
   markNoticesReadAll,
   NOTICE_QUERY_KEY,
   type BackendNotice,
-  type NoticeListData,
 } from '@/api/notice'
+import { toNoticeMessage } from '@/utils/noticeFormat'
+import { patchNoticesReadCache } from '@/composables/useNotices'
 import { messages as fallbackMessages } from '@/mock/spaceData'
 import type { MessageItem } from '@/types/space'
 
@@ -22,47 +22,6 @@ const queryClient = useQueryClient()
 const onlyUnread = ref(false)
 const markingId = ref('')
 const markingAll = ref(false)
-
-function stripHtml(value?: string) {
-  return (value ?? '').replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim()
-}
-
-function formatNoticeTime(value?: string) {
-  if (!value) return ''
-  const date = new Date(value.replace(/-/g, '/'))
-  if (Number.isNaN(date.getTime())) return value
-
-  const now = new Date()
-  const sameDay =
-    date.getFullYear() === now.getFullYear() &&
-    date.getMonth() === now.getMonth() &&
-    date.getDate() === now.getDate()
-
-  if (sameDay) {
-    return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
-  }
-
-  const yesterday = new Date(now)
-  yesterday.setDate(now.getDate() - 1)
-  const isYesterday =
-    date.getFullYear() === yesterday.getFullYear() &&
-    date.getMonth() === yesterday.getMonth() &&
-    date.getDate() === yesterday.getDate()
-
-  if (isYesterday) return '昨天'
-  return `${date.getMonth() + 1}/${date.getDate()}`
-}
-
-function toNoticeMessage(notice: BackendNotice): MessageItem {
-  return {
-    id: String(notice.noticeId ?? ''),
-    title: notice.noticeTitle || '通知',
-    content: stripHtml(notice.noticeContent) || '点击查看通知详情',
-    time: formatNoticeTime(notice.createTime),
-    unread: isNoticeUnread(notice),
-    type: notice.noticeType === '2' ? 'system' : 'reservation',
-  }
-}
 
 function toFallbackMessages() {
   return fallbackMessages.map((message) => ({
@@ -100,7 +59,7 @@ const noticesQuery = useQuery({
 
 const noticeMessages = computed(() => {
   if (!noticesQuery.data.value) return toFallbackMessages()
-  return noticesQuery.data.value.rows.map(toNoticeMessage)
+  return noticesQuery.data.value.rows.map((notice) => toNoticeMessage(notice))
 })
 const unreadMessages = computed(() => noticeMessages.value.filter((message) => message.unread))
 const unreadCount = computed(() => noticesQuery.data.value?.unreadCount ?? unreadMessages.value.length)
@@ -119,25 +78,7 @@ async function refreshNotices() {
 }
 
 function patchReadCache(ids: string[]) {
-  const idSet = new Set(ids)
-  queryClient.setQueryData<NoticeListData>(NOTICE_QUERY_KEY, (current) => {
-    if (!current) return current
-
-    let changedCount = 0
-    const rows = current.rows.map((notice) => {
-      const id = String(notice.noticeId ?? '')
-      if (!idSet.has(id) || !isNoticeUnread(notice)) return notice
-
-      changedCount += 1
-      return { ...notice, isRead: true }
-    })
-
-    return {
-      ...current,
-      rows,
-      unreadCount: Math.max(0, current.unreadCount - changedCount),
-    }
-  })
+  patchNoticesReadCache(queryClient, ids)
 }
 
 async function openMessage(message: MessageItem) {

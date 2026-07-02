@@ -4,14 +4,9 @@ import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { useRoute, useRouter } from 'vue-router'
 import { showToast } from 'vant'
 import { ArrowLeft, BellRing, CheckCheck, Megaphone } from '@lucide/vue'
-import {
-  getNotice,
-  isNoticeUnread,
-  markNoticeRead,
-  NOTICE_QUERY_KEY,
-  type BackendNotice,
-  type NoticeListData,
-} from '@/api/notice'
+import { getNotice, markNoticeRead, NOTICE_QUERY_KEY } from '@/api/notice'
+import { toNoticeMessage } from '@/utils/noticeFormat'
+import { patchNoticesReadCache } from '@/composables/useNotices'
 import { messages as fallbackMessages } from '@/mock/spaceData'
 import type { MessageItem } from '@/types/space'
 
@@ -20,33 +15,6 @@ const router = useRouter()
 const queryClient = useQueryClient()
 const messageId = computed(() => String(route.params.messageId))
 const autoMarkedIds = new Set<string>()
-
-function stripHtml(value?: string) {
-  return (value ?? '')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n')
-    .replace(/<[^>]*>/g, '')
-    .replace(/&nbsp;/g, ' ')
-    .trim()
-}
-
-function formatNoticeTime(value?: string) {
-  if (!value) return ''
-  const date = new Date(value.replace(/-/g, '/'))
-  if (Number.isNaN(date.getTime())) return value
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
-}
-
-function toNoticeMessage(notice: BackendNotice): MessageItem {
-  return {
-    id: String(notice.noticeId ?? ''),
-    title: notice.noticeTitle || '通知',
-    content: stripHtml(notice.noticeContent) || '暂无通知内容',
-    time: formatNoticeTime(notice.createTime),
-    unread: isNoticeUnread(notice),
-    type: notice.noticeType === '2' ? 'system' : 'reservation',
-  }
-}
 
 function findFallbackMessage() {
   const normalizedId = messageId.value.replace(/^mock-/, '')
@@ -65,7 +33,7 @@ const messageQuery = useQuery({
 
     const notice = await getNotice(messageId.value)
     if (!notice) throw new Error('消息不存在')
-    return toNoticeMessage(notice)
+    return toNoticeMessage(notice, { detail: true })
   },
   retry: 1,
 })
@@ -88,27 +56,11 @@ const typeText = computed(() => {
 })
 
 function patchNoticeRead(id: string) {
+  // 详情页自身缓存置为已读，同时同步共享通知列表缓存（红点/未读数来源）。
   queryClient.setQueryData<MessageItem>(['h5-message-detail', id], (current) =>
     current ? { ...current, unread: false } : current,
   )
-
-  queryClient.setQueryData<NoticeListData>(NOTICE_QUERY_KEY, (current) => {
-    if (!current) return current
-
-    let changedCount = 0
-    const rows = current.rows.map((notice) => {
-      if (String(notice.noticeId ?? '') !== id || !isNoticeUnread(notice)) return notice
-
-      changedCount += 1
-      return { ...notice, isRead: true }
-    })
-
-    return {
-      ...current,
-      rows,
-      unreadCount: Math.max(0, current.unreadCount - changedCount),
-    }
-  })
+  patchNoticesReadCache(queryClient, [id])
 }
 
 async function markMessageRead(id: string, options: { silent?: boolean } = {}) {

@@ -1,5 +1,6 @@
 import axios, { AxiosError, type AxiosRequestConfig } from 'axios'
 import { clearSessionStorage, MUST_CHANGE_PASSWORD_STORAGE_KEY, TOKEN_STORAGE_KEY } from '@/api/storage'
+import { clearQueryCache } from '@/api/queryClient'
 
 export interface AjaxResult<T = unknown> {
   code: number
@@ -48,6 +49,8 @@ const service = axios.create({
 // 登录态过期时集中清理 H5 本地缓存，并回到登录页，避免各页面重复处理 401。
 function redirectToLoginWhenExpired() {
   clearSessionStorage()
+  // token 失效同样清空查询缓存，防止下一个登录用户看到上一个用户的残留数据。
+  clearQueryCache()
 
   if (typeof window === 'undefined') return
 
