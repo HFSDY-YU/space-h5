@@ -16,10 +16,8 @@ describe('isNoticeRead / isNoticeUnread', () => {
     { label: 'fallback read 字段', notice: { read: true }, read: true },
   ]
 
-  for (const { label, notice, read } of cases) {
-    it(label, () => {
-      expect(isNoticeRead(notice)).toBe(read)
-      expect(isNoticeUnread(notice)).toBe(!read)
-    })
-  }
+  it.each(cases)('$label', ({ notice, read }) => {
+    expect(isNoticeRead(notice)).toBe(read)
+    expect(isNoticeUnread(notice)).toBe(!read)
+  })
 })

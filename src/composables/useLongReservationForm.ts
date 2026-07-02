@@ -560,7 +560,7 @@ export function useLongReservationForm() {
   }
 
   // 供模板使用（部分仅用于内部计算，但一并暴露以保持行为不变）。
-  void activeWeekdayRanges
+  void activeWeekdayRanges.value
   void formatRangesText
   void getWeekdayLabelByDate
   void toggleWeekday
